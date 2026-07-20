@@ -1,0 +1,4 @@
+interface:
+  display_name: "Agent Operated"
+  short_description: "Run GTP-aware GitHub operations with actor gates"
+  default_prompt: "Use $agent-operated to recover this GTP task and apply the required AO gates."
