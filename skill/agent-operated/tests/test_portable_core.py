@@ -664,6 +664,198 @@ class PortableCoreTests(unittest.TestCase):
             )
         self.assertEqual([], mutations)
 
+    def test_failed_plan_replacement_invalidates_prior_state(self) -> None:
+        finding = GateFinding(code="plan_invalid", message="replacement plan is blocked")
+
+        class TogglePlanProvider(RecordingPolicyProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.block_plan = False
+
+            def check_plan(self, request: PlanCheckRequest) -> GateDecision:
+                if self.block_plan:
+                    return GateDecision(GateStatus.BLOCKED, (finding,))
+                return super().check_plan(request)
+
+        for failure_mode in ("recovery", "build", "check"):
+            with self.subTest(failure_mode=failure_mode):
+                provider = TogglePlanProvider()
+                armed = {"value": False}
+                published: list[ProjectionBatch] = []
+
+                def recover(task_ref: str) -> dict:
+                    if armed["value"] and failure_mode == "recovery":
+                        raise RuntimeError("replacement recovery failed")
+                    return {"state": "ready"}
+
+                def build(projection: dict) -> PlanDraft:
+                    if armed["value"] and failure_mode == "build":
+                        raise RuntimeError("replacement plan build failed")
+                    return self.plan_draft()
+
+                coordinator = self.coordinator(
+                    provider,
+                    recover_task=recover,
+                    build_plan=build,
+                    publisher=published.append,
+                )
+                context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+                candidate = coordinator.check_candidate(
+                    context,
+                    candidate_head_sha="a" * 40,
+                    observations={},
+                )
+                armed["value"] = True
+                provider.block_plan = failure_mode == "check"
+
+                with self.assertRaises(TransitionBlocked):
+                    coordinator.prepare_plan(task_ref=ISSUE_URL)
+
+                mutations: list[str] = []
+                with self.assertRaises(TransitionBlocked):
+                    coordinator.run_github_mutation(
+                        context,
+                        operation_class="commit",
+                        mutation=lambda: mutations.append("commit"),
+                    )
+                with self.assertRaises(TransitionBlocked):
+                    coordinator.publish_plan(context)
+                with self.assertRaises(TransitionBlocked):
+                    coordinator.publish_projection(context, candidate=candidate)
+                with self.assertRaises(TransitionBlocked):
+                    coordinator.prepare_handoff(
+                        context,
+                        candidate=candidate,
+                        observations={},
+                    )
+                self.assertEqual([], mutations)
+                self.assertEqual([], published)
+
+    def test_invalid_task_ref_stops_before_recovery_and_invalidates_state(self) -> None:
+        recover_calls: list[str] = []
+        coordinator = self.coordinator(
+            RecordingPolicyProvider(),
+            recover_task=lambda task_ref: recover_calls.append(task_ref) or {"state": "ready"},
+        )
+        context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        self.assertEqual([ISSUE_URL], recover_calls)
+
+        with self.assertRaises(TransitionBlocked) as blocked:
+            coordinator.prepare_plan(task_ref="not-a-github-issue")
+        self.assertEqual("invalid_task_ref", blocked.exception.findings[0].code)
+        self.assertEqual([ISSUE_URL], recover_calls)
+
+        mutations: list[str] = []
+        with self.assertRaises(TransitionBlocked):
+            coordinator.run_github_mutation(
+                context,
+                operation_class="commit",
+                mutation=lambda: mutations.append("commit"),
+            )
+        self.assertEqual([], mutations)
+
+    def test_candidate_replacement_is_single_and_fail_closed(self) -> None:
+        finding = GateFinding(code="candidate_invalid", message="candidate is blocked")
+
+        class ToggleCandidateProvider(RecordingPolicyProvider):
+            def __init__(self) -> None:
+                super().__init__()
+                self.block_candidate = False
+
+            def check_candidate(self, request: CandidateCheckRequest) -> GateDecision:
+                if self.block_candidate:
+                    return GateDecision(GateStatus.BLOCKED, (finding,))
+                return super().check_candidate(request)
+
+        provider = ToggleCandidateProvider()
+        coordinator = self.coordinator(provider)
+        context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        candidate_a = coordinator.check_candidate(
+            context,
+            candidate_head_sha="a" * 40,
+            observations={},
+        )
+        candidate_b = coordinator.check_candidate(
+            context,
+            candidate_head_sha="b" * 40,
+            observations={},
+        )
+
+        with self.assertRaises(TransitionBlocked):
+            coordinator.publish_projection(context, candidate=candidate_a)
+        with self.assertRaises(TransitionBlocked):
+            coordinator.prepare_handoff(
+                context,
+                candidate=candidate_a,
+                observations={},
+            )
+        self.assertIsInstance(
+            coordinator.prepare_handoff(
+                context,
+                candidate=candidate_b,
+                observations={},
+            ),
+            HandoffReady,
+        )
+
+        provider.block_candidate = True
+        with self.assertRaises(TransitionBlocked):
+            coordinator.check_candidate(
+                context,
+                candidate_head_sha="c" * 40,
+                observations={},
+            )
+        with self.assertRaises(TransitionBlocked):
+            coordinator.prepare_handoff(
+                context,
+                candidate=candidate_b,
+                observations={},
+            )
+
+        provider.block_candidate = False
+        candidate_b = coordinator.check_candidate(
+            context,
+            candidate_head_sha="b" * 40,
+            observations={},
+        )
+        with self.assertRaises(ValueError):
+            coordinator.check_candidate(
+                context,
+                candidate_head_sha="short",
+                observations={},
+            )
+        with self.assertRaises(TransitionBlocked):
+            coordinator.prepare_handoff(
+                context,
+                candidate=candidate_b,
+                observations={},
+            )
+
+    def test_foreign_context_candidate_check_does_not_clear_current_candidate(self) -> None:
+        coordinator = self.coordinator(RecordingPolicyProvider())
+        context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        candidate = coordinator.check_candidate(
+            context,
+            candidate_head_sha="a" * 40,
+            observations={},
+        )
+        foreign = self.coordinator(RecordingPolicyProvider()).prepare_plan(task_ref=ISSUE_URL)
+
+        with self.assertRaises(TransitionBlocked):
+            coordinator.check_candidate(
+                foreign,
+                candidate_head_sha="b" * 40,
+                observations={},
+            )
+        self.assertIsInstance(
+            coordinator.prepare_handoff(
+                context,
+                candidate=candidate,
+                observations={},
+            ),
+            HandoffReady,
+        )
+
     def test_plan_publication_uses_projection_batch_route(self) -> None:
         provider = RecordingPolicyProvider()
         published: list[ProjectionBatch] = []

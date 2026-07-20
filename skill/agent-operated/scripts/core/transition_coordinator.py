@@ -294,9 +294,12 @@ class TransitionCoordinator:
         self._screening = screening
         self._publisher = publisher
         self._context: InvocationContext | None = None
-        self._checked_candidates: dict[str, CheckedCandidate] = {}
+        self._checked_candidate: CheckedCandidate | None = None
 
     def prepare_plan(self, *, task_ref: str) -> InvocationContext:
+        self._invalidate_current_state()
+        if not isinstance(task_ref, str) or ISSUE_URL.fullmatch(task_ref) is None:
+            raise TransitionBlocked(self._fixed_finding("invalid_task_ref"))
         try:
             task_projection = self._recover_task(task_ref)
         except Exception:
@@ -324,7 +327,6 @@ class TransitionCoordinator:
         )
         context = InvocationContext.build(checked, self._actor_profile)
         self._context = context
-        self._checked_candidates.clear()
         return context
 
     def run_github_mutation(
@@ -362,6 +364,7 @@ class TransitionCoordinator:
         observations: Mapping[str, object],
     ) -> CheckedCandidate:
         self._require_current_context(context)
+        self._checked_candidate = None
         require_proceed(
             self._gate.check_candidate(
                 task_ref=context.task_ref,
@@ -370,7 +373,7 @@ class TransitionCoordinator:
             )
         )
         candidate = CheckedCandidate(context.digest, context.task_ref, candidate_head_sha)
-        self._checked_candidates[candidate_head_sha] = candidate
+        self._checked_candidate = candidate
         return candidate
 
     def publish_plan(
@@ -487,9 +490,13 @@ class TransitionCoordinator:
         if not isinstance(candidate, CheckedCandidate) or (
             candidate.invocation_digest != context.digest
             or candidate.task_ref != context.task_ref
-            or self._checked_candidates.get(candidate.candidate_head_sha) is not candidate
+            or self._checked_candidate is not candidate
         ):
             raise TransitionBlocked(self._fixed_finding("candidate_context_mismatch"))
+
+    def _invalidate_current_state(self) -> None:
+        self._context = None
+        self._checked_candidate = None
 
     @staticmethod
     def _fixed_finding(code: str) -> tuple[GateFinding, ...]:

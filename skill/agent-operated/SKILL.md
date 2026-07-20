@@ -11,7 +11,9 @@ GitHub native facts, or Human decisions.
 
 ## Workflow
 
-1. Resolve the canonical GitHub Issue URL and current operation phase.
+1. Resolve the canonical GitHub Issue URL and current operation phase. Starting `prepare_plan` invalidates the
+   previous Invocation Context and Checked Candidate, including when the new input or check fails. Reject a
+   non-canonical Issue URL before calling the host recovery dependency.
 2. Invoke `scripts/operations/gtp/recover.py` through
    `scripts/core/transition_coordinator.py::TransitionCoordinator.prepare_plan`. Preserve the entire
    `gtp_projection`; do not rename or collapse its vocabulary.
@@ -28,7 +30,9 @@ GitHub native facts, or Human decisions.
    Never reuse an earlier observation. One callback represents one GitHub mutation; a host performing multiple
    writes must invoke the wrapper separately for each write.
 7. After the first executable candidate exists, call `check_candidate` with the context, full Candidate Head, and
-   target-native observations. Use the returned `CheckedCandidate`; candidate checking does not execute a callback.
+   target-native observations. One Invocation Context has exactly one current `CheckedCandidate`. A new check on
+   the current context invalidates the prior token before validation and does not restore it on failure. Recheck an
+   older head to create an explicit rollback token. Candidate checking does not execute a callback.
 8. Run validation and selected Public Operations without manufacturing a combined AO pass/fail.
 9. Fix the handoff Candidate Head, then call `prepare_handoff` with the same context and `CheckedCandidate` to
    recheck it. The returned `HandoffReady` is not a write or merge authority.

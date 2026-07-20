@@ -25,6 +25,10 @@ GTP task projection、検査済みplan、plan公開予定bytes、Actor Profile d
 束縛し、candidate check、publication、handoffへ同じcontextを要求する。candidate checkとhandoff preparationは任意callbackを
 実行せず、context-boundな値だけを返す。GitHubへの効果はGitHub Mutation Gateまたはactor-gated publication routeだけが発火する。
 
+新しいplan準備を始めた時点で以前のcontextとcandidate tokenを失効させ、canonical Issue URLをhost recovery前に検査する。
+replacementがrecovery、build、check、入力検査で失敗しても旧contextへ戻さない。一つのInvocation Contextにつきcurrent
+candidate tokenは一つとし、新candidate検査を始めると旧tokenを先に失効させる。明示的rollbackは過去headの再検査で行う。
+
 plan publicationはchecked plan内のexact artifact bytesから直接batchを作る。一般Projection BatchはChecked Plan digestと
 opaque artifact IDを持ち、`target_ref`をrepository-relative pathまたはclosed outbound-body vocabularyへ限定する。
 Publication Screeningはfindingへraw `target_ref`を返さず、opaque artifact IDだけを返す。
@@ -36,6 +40,7 @@ Acceptance ReadbackはInvocation ContextのProfile content digestと一致する
 
 - 最初のwriteが正しくても後続writeごとにactorを再確認する。
 - 新しいCoordinator、stale plan、別task、別Profile、別candidateからprotected transitionを開始できない。
+- failed plan replacement後の旧contextと、成功または失敗したcandidate replacement後の旧tokenを再利用できない。
 - plan check後の本文差し替えと、Projection identifier経由の非公開情報投影をportable coreで拒否できる。
 - permissiveな旧Coordinator APIとの後方互換は維持しない。未release baselineの境界を一つの安全なrouteへ置き換える。
 - production credential、provider、完全なbatch列挙、repository integration、native mergeは引き続きscope外である。
