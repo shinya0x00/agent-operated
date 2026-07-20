@@ -1,6 +1,6 @@
 # agent-operated Design
 
-Status: private design baseline
+Status: pre-alpha design and implementation baseline
 
 Supersession: [ADR-0001](adr/0001-redefine-agent-operated.md)
 
