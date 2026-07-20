@@ -4,8 +4,6 @@
 - Date: 2026-07-18
 - Decision owner: operator
 - Scope: `00-lab/agent-operated/`
-- Doctrine ref:
-  [`849a86f70ef315dbc9cbc5560579f39158b8f103`](https://github.com/shinya-reiji/doctrine/blob/849a86f70ef315dbc9cbc5560579f39158b8f103/DOCTRINE.md)
 
 ## Context
 
@@ -198,8 +196,8 @@ canonical serializationはGTP側で解決する。
 
 ## Future implementation order
 
-このADR自体はruntime wiringを変更しない。実装は別のGTP task contractで許可を得て、exact Doctrineを
-再取得したうえで次のwalking skeletonから始める。
+このADR自体はruntime wiringを変更しない。実装は別のGTP task contractで許可を得て、plan公開前の
+Internal Policy Gateを通したうえで次のwalking skeletonから始める。
 
 1. GTP側のcanonical evidence schemaとdurable provenance record referenceを解決する。
 2. runtime metadataを観測し、取得不能なfieldを`unknown`で返す最小adapterを作る。

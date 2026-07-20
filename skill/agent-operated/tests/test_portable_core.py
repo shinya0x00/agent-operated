@@ -14,10 +14,39 @@ SKILL = Path(__file__).resolve().parents[1]
 REPOSITORY = SKILL.parents[1]
 CORE = SKILL / "scripts" / "core"
 GTP = SKILL / "scripts" / "operations" / "gtp" / "recover.py"
-PUBLICATION = SKILL / "scripts" / "operations" / "doctrine" / "check_publication.py"
+PUBLICATION = SKILL / "scripts" / "operations" / "publication" / "check.py"
 BINDER = CORE / "bind_operation_result.py"
 ACCEPTANCE = CORE / "verify_acceptance_readback.py"
 ISSUE_URL = "https://github.com/example/project/issues/7"
+
+sys.path.insert(0, str(CORE))
+from internal_policy_gate import (  # noqa: E402
+    CandidateCheckRequest,
+    GateDecision,
+    GateFinding,
+    GateStatus,
+    InternalPolicyGate,
+    PlanCheckRequest,
+    ProjectionArtifact,
+    ProjectionCheckRequest,
+)
+
+
+class RecordingPolicyProvider:
+    def __init__(self) -> None:
+        self.requests: list[object] = []
+
+    def check_plan(self, request: PlanCheckRequest) -> GateDecision:
+        self.requests.append(request)
+        return GateDecision(GateStatus.PROCEED)
+
+    def check_candidate(self, request: CandidateCheckRequest) -> GateDecision:
+        self.requests.append(request)
+        return GateDecision(GateStatus.PROCEED)
+
+    def check_projection(self, request: ProjectionCheckRequest) -> GateDecision:
+        self.requests.append(request)
+        return GateDecision(GateStatus.PROCEED)
 
 
 class PortableCoreTests(unittest.TestCase):
@@ -75,7 +104,7 @@ class PortableCoreTests(unittest.TestCase):
             "operation_result_binding": BINDER,
             "acceptance_readback": ACCEPTANCE,
             "gtp_operation": GTP,
-            "doctrine_publication_operation": PUBLICATION,
+            "publication_screening": PUBLICATION,
         }
         observed: set[str] = set()
         for attachment, script in attachments.items():
@@ -89,6 +118,76 @@ class PortableCoreTests(unittest.TestCase):
             self.assertEqual("none", output["authority"])
             observed.add(attachment)
         self.assertEqual(set(attachments), observed)
+
+        provider = RecordingPolicyProvider()
+        gate = InternalPolicyGate(provider)
+        candidate = "a" * 40
+        decisions = (
+            gate.check_plan(task_ref=ISSUE_URL, plan={"scope": "candidate"}),
+            gate.check_candidate(
+                task_ref=ISSUE_URL,
+                candidate_head_sha=candidate,
+                observations={"tests": "passed"},
+            ),
+            gate.check_projection(
+                task_ref=ISSUE_URL,
+                artifacts=(ProjectionArtifact("PURPOSE.md", "public content"),),
+            ),
+        )
+        self.assertTrue(all(item.status is GateStatus.PROCEED for item in decisions))
+        self.assertEqual(
+            [PlanCheckRequest, CandidateCheckRequest, ProjectionCheckRequest],
+            [type(item) for item in provider.requests],
+        )
+
+    def test_internal_policy_gate_is_host_supplied_and_invocation_local(self) -> None:
+        provider = RecordingPolicyProvider()
+        gate = InternalPolicyGate(provider)
+        decision = gate.check_plan(task_ref=ISSUE_URL, plan={"scope": "candidate"})
+
+        self.assertFalse(hasattr(gate, "to_json"))
+        self.assertFalse(hasattr(decision, "to_dict"))
+        with self.assertRaises(TypeError):
+            json.dumps(decision)
+
+        module_source = (CORE / "internal_policy_gate.py").read_text(encoding="utf-8")
+        self.assertNotIn("subprocess.run", module_source)
+        self.assertNotIn("os.environ", module_source)
+        self.assertNotIn("argparse.ArgumentParser", module_source)
+
+    def test_internal_policy_gate_validates_candidate_and_provider_result(self) -> None:
+        provider = RecordingPolicyProvider()
+        gate = InternalPolicyGate(provider)
+
+        with self.assertRaises(ValueError):
+            gate.check_candidate(
+                task_ref=ISSUE_URL,
+                candidate_head_sha="short",
+                observations={},
+            )
+
+        class InvalidProvider(RecordingPolicyProvider):
+            def check_projection(self, request: ProjectionCheckRequest) -> GateDecision:
+                return {"status": "proceed"}  # type: ignore[return-value]
+
+        with self.assertRaises(TypeError):
+            InternalPolicyGate(InvalidProvider()).check_projection(
+                task_ref=ISSUE_URL,
+                artifacts=(ProjectionArtifact("PURPOSE.md", "public content"),),
+            )
+
+        with self.assertRaises(TypeError):
+            GateDecision("proceed")  # type: ignore[arg-type]
+
+        finding = GateFinding(
+            code="candidate_evidence_missing",
+            message="candidate validation evidence is missing",
+            target_ref="tests/",
+        )
+        self.assertEqual(
+            GateStatus.BLOCKED,
+            GateDecision(GateStatus.BLOCKED, (finding,)).status,
+        )
 
     def test_actor_observation_does_not_require_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -355,7 +454,7 @@ raise SystemExit(9)
             self.assertNotIn(secret, completed.stdout + completed.stderr)
             self.assertNotIn(local_path, completed.stdout + completed.stderr)
             output = json.loads(completed.stdout)
-            self.assertEqual("doctrine_publication_operation", output["decision_scope"])
+            self.assertEqual("publication_screening", output["decision_scope"])
             self.assertEqual(
                 {"secret_value", "local_absolute_path", "private_context", "ephemeral_runtime_id"},
                 {item["kind"] for item in output["findings"]},
@@ -524,7 +623,11 @@ raise SystemExit(9)
         identity = origin.removesuffix(".git").rsplit("/", 2)[-2:]
         identity_text = "/".join(identity) if len(identity) == 2 else ""
         for path in SKILL.rglob("*"):
-            if not path.is_file() or "tests" in path.parts:
+            if (
+                not path.is_file()
+                or "tests" in path.parts
+                or path.suffix not in {".json", ".md", ".py", ".yaml", ".yml"}
+            ):
                 continue
             source = path.read_text(encoding="utf-8")
             self.assertNotIn("TODO", source, path)

@@ -1,4 +1,4 @@
-# Doctrine Publication Operation policy
+# Publication Screening policy
 
 Screen every candidate Issue comment, PR body, Check Run text, and committed Evidence artifact before
 publication.
@@ -22,5 +22,6 @@ Return only finding kind and line number. Never reproduce matched content.
 - actor login and stable numeric GitHub ID;
 - named Evidence limitations and `unknown` values.
 
-Pattern screening is one Doctrine Operation result, not AO Core conformance and not proof that a document contains
-no secret. Keep host secret scanners and review in place when repository integration supplies them.
+Pattern screening is one source-neutral public Operation result, not AO Core conformance and not proof that a
+document contains no secret. Keep host secret scanners and review in place when Repository Integration supplies
+them. Internal Policy Gate decisions are a separate Private Control Route and must not be added to this result.

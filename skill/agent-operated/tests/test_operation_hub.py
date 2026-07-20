@@ -11,8 +11,36 @@ import unittest
 SKILL = Path(__file__).resolve().parents[1]
 CORE = SKILL / "scripts" / "core"
 GTP = SKILL / "scripts" / "operations" / "gtp" / "recover.py"
-PUBLICATION = SKILL / "scripts" / "operations" / "doctrine" / "check_publication.py"
+PUBLICATION = SKILL / "scripts" / "operations" / "publication" / "check.py"
 ISSUE_URL = "https://github.com/example/project/issues/7"
+
+sys.path.insert(0, str(CORE))
+from internal_policy_gate import (  # noqa: E402
+    CandidateCheckRequest,
+    GateDecision,
+    GateStatus,
+    InternalPolicyGate,
+    PlanCheckRequest,
+    ProjectionArtifact,
+    ProjectionCheckRequest,
+)
+
+
+class ProceedingPolicyProvider:
+    def __init__(self) -> None:
+        self.phases: list[str] = []
+
+    def check_plan(self, request: PlanCheckRequest) -> GateDecision:
+        self.phases.append("plan")
+        return GateDecision(GateStatus.PROCEED)
+
+    def check_candidate(self, request: CandidateCheckRequest) -> GateDecision:
+        self.phases.append("candidate")
+        return GateDecision(GateStatus.PROCEED)
+
+    def check_projection(self, request: ProjectionCheckRequest) -> GateDecision:
+        self.phases.append("projection")
+        return GateDecision(GateStatus.PROCEED)
 
 
 class OperationHubEndToEndTests(unittest.TestCase):
@@ -72,6 +100,13 @@ print(json.dumps({
         candidate = "a" * 40
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
+            provider = ProceedingPolicyProvider()
+            gate = InternalPolicyGate(provider)
+            plan_decision = gate.check_plan(
+                task_ref=ISSUE_URL,
+                plan={"scope": "portable boundary repair"},
+            )
+            self.assertEqual(GateStatus.PROCEED, plan_decision.status)
             profile = self.write_json(
                 directory,
                 "profile.json",
@@ -127,13 +162,24 @@ print(json.dumps({
 
             publication = directory / "publication.md"
             publication.write_text("candidate: " + candidate + "\n", encoding="utf-8")
+            candidate_decision = gate.check_candidate(
+                task_ref=ISSUE_URL,
+                candidate_head_sha=candidate,
+                observations={"actor": actor_result, "recovery": gtp_result},
+            )
+            projection_decision = gate.check_projection(
+                task_ref=ISSUE_URL,
+                artifacts=(ProjectionArtifact("publication.md", publication.read_text()),),
+            )
+            self.assertEqual(GateStatus.PROCEED, candidate_decision.status)
+            self.assertEqual(GateStatus.PROCEED, projection_decision.status)
             code, publication_result = self.run_json([sys.executable, str(PUBLICATION), str(publication)])
             self.assertEqual(0, code)
             code, publication_receipt = self.bind(
                 directory,
                 "publication-input.json",
                 {
-                    "operation": "doctrine_publication",
+                    "operation": "publication_screening",
                     "phase": "pre_publication",
                     "task_ref": ISSUE_URL,
                     "implementation_version": "1",
@@ -147,6 +193,8 @@ print(json.dumps({
             self.assertEqual(0, code)
             self.assertEqual("bound", publication_receipt["candidate_binding"]["status"])
             self.assertEqual(publication_result, publication_receipt["result"])
+            self.assertEqual(["plan", "candidate", "projection"], provider.phases)
+            self.assertNotIn("internal_policy", json.dumps(publication_receipt))
 
             acceptance_input = self.write_json(
                 directory,

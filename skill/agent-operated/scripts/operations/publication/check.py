@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Apply the Doctrine publication check without reproducing matched values."""
+"""Screen a publication artifact without reproducing matched values."""
 
 from __future__ import annotations
 
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.smoke:
         emit({
             "decision_scope": "ao_operation_wiring",
-            "attachment": "doctrine_publication_operation",
+            "attachment": "publication_screening",
             "fired": True,
             "validated": True,
             "authority": "none",
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.path is None:
         emit({
-            "decision_scope": "doctrine_publication_operation",
+            "decision_scope": "publication_screening",
             "findings": [{"kind": "input_unavailable"}],
             "verdict": "blocked",
             "authority": "none",
@@ -82,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         source = args.path.read_text(encoding="utf-8")
     except (OSError, UnicodeError):
         emit({
-            "decision_scope": "doctrine_publication_operation",
+            "decision_scope": "publication_screening",
             "findings": [{"kind": "input_unavailable"}],
             "verdict": "blocked",
             "authority": "none",
@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
 
     blocked = bool(findings)
     envelope: dict[str, Any] = {
-        "decision_scope": "doctrine_publication_operation",
+        "decision_scope": "publication_screening",
         "source": "input",
         "findings": findings,
         "verdict": "blocked" if blocked else "proceed",

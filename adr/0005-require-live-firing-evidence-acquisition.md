@@ -1,13 +1,11 @@
 # ADR-0005: actual firingはtask-selected live acquisitionで証明する
 
-- Status: Accepted
+- Status: Accepted; public/private placement superseded by ADR-0008
 - Date: 2026-07-18
 - Decision owner: operator
 - Scope: `00-lab/agent-operated/`
 - GTP task: [Issue #8](https://github.com/shinya0x00/00-lab/issues/8)
 - Blocks: [Issue #7](https://github.com/shinya0x00/00-lab/issues/7)
-- Doctrine ref:
-  [`849a86f70ef315dbc9cbc5560579f39158b8f103`](https://github.com/shinya-reiji/doctrine/blob/849a86f70ef315dbc9cbc5560579f39158b8f103/DOCTRINE.md)
 
 ## Context
 

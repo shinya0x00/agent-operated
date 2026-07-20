@@ -21,12 +21,24 @@ validation、handoff、acceptanceの対象となるPR source branchのfull commi
 _Avoid_: branch name、`merge_commit_sha`
 
 **AO Core**:
-actorとcredential role、operation phase、Adapter routing、task・Candidate Head・Operation resultのbindingを所有するAOの中心境界。
+actorとcredential role、operation phase、route selection、task・Candidate Head・Operation resultのbindingを所有するAOの中心境界。
 _Avoid_: Operation Hub全体、総合安全判定
 
+**Public Delivery Route**:
+独立した利用価値を持つOperation resultを取得し、必要なCandidate Headへ束縛してHuman Accountへ渡すAOの経路。
+_Avoid_: Private Control Route、総合安全判定
+
+**Private Control Route**:
+hostが提供する内部検査をphase transitionの前提として呼び、結果をinvocation-localに扱うAOの経路。
+_Avoid_: Operation、Public Delivery Route
+
+**Internal Policy Gate**:
+host固定providerがplan、candidate、公開予定artifactを検査し、対象transitionだけを制御するinvocation-localな境界。
+_Avoid_: Operation、Operation Receipt、汎用executor
+
 **Operation**:
-特定phaseで外部正本または検査器を呼び、その固有語彙のresultを返す実行単位。
-_Avoid_: AO Core、AO feature
+Public Delivery Routeの特定phaseで外部正本または検査器を呼び、独立した利用価値を持つresultを返す実行単位。
+_Avoid_: AO Core、Internal Policy Gate、AO feature
 
 **Adapter**:
 Operationと外部interfaceのtransportおよびversion境界を接続し、外部の意味を変更しない接続単位。
@@ -34,7 +46,11 @@ _Avoid_: translator、canonical owner
 
 **Operation Receipt**:
 一つのOperation resultをtask、phase、実装version、source、および必要なCandidate Headへ束縛するAOのRecord。
-_Avoid_: AO verdict、総合合否
+_Avoid_: AO verdict、総合合否、Internal Policy Gate result
+
+**Publication Screening**:
+公開予定artifactから公開不適切な値の候補を検出し、matched valueを再掲せずfindingを返すsource-neutralなOperation。
+_Avoid_: private policy conformance、secret absence proof
 
 **Actor Observation**:
 一つのcredential circuitからGitHubが返したloginとstable numeric IDの観測結果。

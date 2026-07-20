@@ -1,11 +1,9 @@
 # ADR-0006: portable coreとrepository integrationを分離する
 
-- Status: Accepted
+- Status: Accepted; ownership list superseded by ADR-0008
 - Date: 2026-07-20
 - Decision owner: operator
 - Scope: `agent-operated/`
-- Doctrine ref:
-  [`c183533cd2f2fd686aad7f6557bf6fa759bd744e`](https://github.com/shinya-reiji/doctrine/blob/c183533cd2f2fd686aad7f6557bf6fa759bd744e/DOCTRINE.md)
 - GTP observation ref:
   [`4390cee29c1f7433666d19ffbdd6ff02c9b44178`](https://github.com/shinya0x00/github-task-protocol/blob/4390cee29c1f7433666d19ffbdd6ff02c9b44178/GTP.md)
 
@@ -28,8 +26,8 @@ portable coreは次を所有する。
 - `agent-operated` Codex skillとraw-path entry
 - GTP公式`status` projectionを取得するconsumer adapter
 - actor profile、Machine Account preflight、credential bridge
-- durable record gate
-- `present / attached / fired / validated`を分けるwiring detector
+- source-neutralなPublication Screening
+- host固定providerを受け取るInternal Policy Gate port
 - exact-head handoff readinessとHuman Account acceptance readback
 - deterministic fixtureとlocal-command test
 

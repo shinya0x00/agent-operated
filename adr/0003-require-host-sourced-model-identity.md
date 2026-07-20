@@ -6,7 +6,6 @@
 - Scope: `00-lab/agent-operated/`
 - GTP task: [Issue #5](https://github.com/shinya0x00/00-lab/issues/5)
 - Rework of: [Issue #3](https://github.com/shinya0x00/00-lab/issues/3)
-- Doctrine ref: unresolved（`agent-operated-bot`によるcurrent `main`取得が404だったため、このADRはDoctrine準拠を主張しない）
 
 ## 何が起きたか
 
@@ -152,8 +151,8 @@ ADR-0002の次の判断は維持する。
 - GitHub projection writerとreadback detector
 - identity取得失敗時のpublication gate
 
-これらは別のGTP taskで許可を得る。実装taskは開始時にcurrent Doctrineを取得し、実際のattachment point、real trigger、
-observable oracleをcontractへ固定しなければならない。このADRは取得できなかったDoctrineへの準拠や、未発火のhook wiringを
+これらは別のGTP taskで許可を得る。実装taskは実際のattachment point、real trigger、observable oracleを
+contractへ固定し、plan公開前のInternal Policy Gateを通さなければならない。このADRは未発火のhook wiringを
 完成扱いしない。
 
 ## Acceptance evidence for future implementation
@@ -210,6 +209,6 @@ requested valueと生成結果のreadbackを混同するため却下した。req
 - Codex hostが`gpt-5.6-sol`より細かいimmutable model revisionを提供するか。
 - provider署名済みattestationをlocal CodexとResponses APIのどこから取得できるか。
 - GTP canonical evidence schemaがidentity sourceとtrust classをどのfield名で表現するか。
-- `agent-operated-bot`にprivate Doctrineのread権限を与えるか、別のread-only authority circuitを用意するか。
+- production hostがInternal Policy Gate providerをどのread-only authority circuitで提供するか。
 
 これらは推測で埋めず、future taskのdurable contractへ`unknown`とnext probeを残す。

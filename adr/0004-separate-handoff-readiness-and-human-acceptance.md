@@ -6,8 +6,6 @@
 - Scope: `00-lab/agent-operated/`
 - GTP task: [Issue #8](https://github.com/shinya0x00/00-lab/issues/8)
 - Blocks: [Issue #7](https://github.com/shinya0x00/00-lab/issues/7)
-- Doctrine ref:
-  [`849a86f70ef315dbc9cbc5560579f39158b8f103`](https://github.com/shinya-reiji/doctrine/blob/849a86f70ef315dbc9cbc5560579f39158b8f103/DOCTRINE.md)
 
 ## Context
 
@@ -122,7 +120,7 @@ baselineへ採用しない。
 
 ### Conversationだけをacceptance evidenceにする
 
-GitHubだけを読むclean sessionが復元できず、Doctrine R2とAOのdurable-state principleを満たさないため却下する。
+GitHubだけを読むclean sessionが復元できず、AOのdurable-state principleを満たさないため却下する。
 
 ## Acceptance evidence for implementation
 
