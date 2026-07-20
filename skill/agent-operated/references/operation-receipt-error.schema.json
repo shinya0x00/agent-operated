@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-operated/operation-receipt-error.schema.json",
+  "title": "Agent Operated Operation Receipt Error",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "error_version",
+    "decision_scope",
+    "error",
+    "findings",
+    "authority"
+  ],
+  "properties": {
+    "error_version": {
+      "const": 1
+    },
+    "decision_scope": {
+      "const": "operation_receipt_binding"
+    },
+    "error": {
+      "const": "invalid_input"
+    },
+    "findings": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          }
+        }
+      }
+    },
+    "authority": {
+      "const": "none"
+    }
+  }
+}

@@ -55,19 +55,9 @@ def valid_source_ref(value: object) -> bool:
 
 def invalid(kind: str) -> int:
     emit({
-        "receipt_version": 1,
-        "operation": None,
-        "phase": None,
-        "task_ref": None,
-        "implementation_version": None,
-        "source_ref": None,
-        "candidate_binding": {
-            "required": None,
-            "status": "unavailable",
-            "candidate_head_sha": None,
-            "observed_head_sha": None,
-        },
-        "result": {},
+        "error_version": 1,
+        "decision_scope": "operation_receipt_binding",
+        "error": "invalid_input",
         "findings": [{"kind": kind}],
         "authority": "none",
     })

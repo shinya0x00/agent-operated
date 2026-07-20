@@ -1,6 +1,6 @@
 # ADR-0001: agent-operatedをprivate identity-separating GTP Operationとして再定義する
 
-- Status: Accepted
+- Status: Accepted; ownership and enforcement model superseded by ADR-0007, ADR-0008, and ADR-0009
 - Date: 2026-07-18
 - Decision owner: operator
 - Scope: `00-lab/agent-operated/`

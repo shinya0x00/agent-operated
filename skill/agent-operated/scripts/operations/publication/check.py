@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 import re
 import sys
-from typing import Any
+from typing import Any, Iterable
 
 
 PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -54,6 +54,68 @@ def emit(value: dict[str, Any]) -> None:
     sys.stdout.write("\n")
 
 
+def screen_items(items: Iterable[tuple[str, bytes]]) -> dict[str, Any]:
+    findings: list[dict[str, Any]] = []
+    for target_ref, content in items:
+        try:
+            source = content.decode("utf-8")
+        except (AttributeError, UnicodeDecodeError):
+            return {
+                "decision_scope": "publication_screening",
+                "source": "input",
+                "findings": [{"kind": "input_unavailable", "target_ref": target_ref}],
+                "verdict": "blocked",
+                "authority": "none",
+                "blocker_ref": target_ref,
+            }
+        seen: set[tuple[str, int]] = set()
+        for line_number, line in enumerate(source.splitlines(), start=1):
+            for kind, pattern in PATTERNS:
+                if pattern.search(line) is None or (kind, line_number) in seen:
+                    continue
+                seen.add((kind, line_number))
+                findings.append({"kind": kind, "line": line_number, "target_ref": target_ref})
+
+    blocked = bool(findings)
+    envelope: dict[str, Any] = {
+        "decision_scope": "publication_screening",
+        "source": "input",
+        "findings": findings,
+        "verdict": "blocked" if blocked else "proceed",
+        "authority": "none",
+    }
+    if blocked:
+        first = findings[0]
+        envelope["blocker_ref"] = f"{first['target_ref']}:{first['line']}"
+    return envelope
+
+
+def screen_batch(batch: object) -> dict[str, Any]:
+    artifacts = getattr(batch, "artifacts", None)
+    if not isinstance(artifacts, tuple) or not artifacts:
+        return {
+            "decision_scope": "publication_screening",
+            "source": "input",
+            "findings": [{"kind": "input_unavailable"}],
+            "verdict": "blocked",
+            "authority": "none",
+        }
+    items: list[tuple[str, bytes]] = []
+    for artifact in artifacts:
+        target_ref = getattr(artifact, "target_ref", None)
+        content = getattr(artifact, "content", None)
+        if not isinstance(target_ref, str) or not isinstance(content, bytes):
+            return {
+                "decision_scope": "publication_screening",
+                "source": "input",
+                "findings": [{"kind": "input_unavailable"}],
+                "verdict": "blocked",
+                "authority": "none",
+            }
+        items.append((target_ref, content))
+    return screen_items(items)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", nargs="?", type=Path)
@@ -79,8 +141,8 @@ def main(argv: list[str] | None = None) -> int:
         })
         return 2
     try:
-        source = args.path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError):
+        content = args.path.read_bytes()
+    except OSError:
         emit({
             "decision_scope": "publication_screening",
             "findings": [{"kind": "input_unavailable"}],
@@ -89,27 +151,9 @@ def main(argv: list[str] | None = None) -> int:
         })
         return 2
 
-    findings: list[dict[str, Any]] = []
-    seen: set[tuple[str, int]] = set()
-    for line_number, line in enumerate(source.splitlines(), start=1):
-        for kind, pattern in PATTERNS:
-            if pattern.search(line) is None or (kind, line_number) in seen:
-                continue
-            seen.add((kind, line_number))
-            findings.append({"kind": kind, "line": line_number})
-
-    blocked = bool(findings)
-    envelope: dict[str, Any] = {
-        "decision_scope": "publication_screening",
-        "source": "input",
-        "findings": findings,
-        "verdict": "blocked" if blocked else "proceed",
-        "authority": "none",
-    }
-    if blocked:
-        envelope["blocker_ref"] = f"input:{findings[0]['line']}"
+    envelope = screen_items((("input", content),))
     emit(envelope)
-    return 2 if blocked else 0
+    return 2 if envelope["verdict"] == "blocked" else 0
 
 
 if __name__ == "__main__":

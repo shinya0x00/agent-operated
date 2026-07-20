@@ -1,19 +1,16 @@
-"""Invocation-local port for host-controlled policy checks.
-
-The host supplies the provider as an in-process object. AO does not resolve a
-provider from task input, environment variables, filesystem paths, or command
-arguments, and this module deliberately exposes no CLI or serialization API.
-"""
+"""Invocation-local port for host-controlled policy checks."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 import re
-from typing import Mapping, Protocol, Sequence
+from typing import Callable, Mapping, Protocol, Sequence
 
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
+FULL_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 FINDING_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
 
@@ -31,11 +28,13 @@ class GateFinding:
     target_ref: str | None = None
 
     def __post_init__(self) -> None:
-        if FINDING_CODE.fullmatch(self.code) is None:
+        if not isinstance(self.code, str) or FINDING_CODE.fullmatch(self.code) is None:
             raise ValueError("finding code must use target-native snake_case")
-        if not self.message.strip():
+        if not isinstance(self.message, str) or not self.message.strip():
             raise ValueError("finding message must not be empty")
-        if self.target_ref is not None and not self.target_ref.strip():
+        if self.target_ref is not None and (
+            not isinstance(self.target_ref, str) or not self.target_ref.strip()
+        ):
             raise ValueError("target_ref must not be empty when present")
 
 
@@ -62,6 +61,7 @@ class GateDecision:
 @dataclass(frozen=True)
 class PlanCheckRequest:
     task_ref: str
+    task_projection: Mapping[str, object]
     plan: Mapping[str, object]
 
 
@@ -75,13 +75,79 @@ class CandidateCheckRequest:
 @dataclass(frozen=True)
 class ProjectionArtifact:
     target_ref: str
-    content: str
+    content: bytes
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.target_ref, str) or not self.target_ref.strip():
+            raise ValueError("target_ref must not be empty")
+        if not isinstance(self.content, bytes):
+            raise TypeError("content must be bytes")
+
+
+@dataclass(frozen=True)
+class ProjectionBatch:
+    candidate_head_sha: str | None
+    artifacts: tuple[ProjectionArtifact, ...]
+    digest: str
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        candidate_head_sha: str | None,
+        artifacts: Sequence[ProjectionArtifact],
+    ) -> "ProjectionBatch":
+        normalized = tuple(artifacts)
+        return cls(
+            candidate_head_sha=candidate_head_sha,
+            artifacts=normalized,
+            digest=cls.compute_digest(candidate_head_sha, normalized),
+        )
+
+    def __post_init__(self) -> None:
+        if self.candidate_head_sha is not None and (
+            not isinstance(self.candidate_head_sha, str)
+            or FULL_SHA.fullmatch(self.candidate_head_sha) is None
+        ):
+            raise ValueError("candidate_head_sha must be a full lowercase commit SHA")
+        if not isinstance(self.artifacts, tuple) or not self.artifacts:
+            raise ValueError("artifacts must be a non-empty tuple")
+        if not all(isinstance(item, ProjectionArtifact) for item in self.artifacts):
+            raise TypeError("artifacts must contain ProjectionArtifact values")
+        target_refs = [item.target_ref for item in self.artifacts]
+        if len(target_refs) != len(set(target_refs)):
+            raise ValueError("artifact target_ref values must be unique")
+        if not isinstance(self.digest, str) or FULL_DIGEST.fullmatch(self.digest) is None:
+            raise ValueError("digest must be a lowercase SHA-256 value")
+        if self.digest != self.compute_digest(self.candidate_head_sha, self.artifacts):
+            raise ValueError("projection batch digest does not match its content")
+
+    def validate_digest(self) -> None:
+        if self.digest != self.compute_digest(self.candidate_head_sha, self.artifacts):
+            raise ValueError("projection batch digest does not match its content")
+
+    @staticmethod
+    def compute_digest(
+        candidate_head_sha: str | None,
+        artifacts: Sequence[ProjectionArtifact],
+    ) -> str:
+        digest = hashlib.sha256()
+
+        def add(value: bytes) -> None:
+            digest.update(len(value).to_bytes(8, "big"))
+            digest.update(value)
+
+        add((candidate_head_sha or "").encode("ascii"))
+        for artifact in artifacts:
+            add(artifact.target_ref.encode("utf-8"))
+            add(artifact.content)
+        return digest.hexdigest()
 
 
 @dataclass(frozen=True)
 class ProjectionCheckRequest:
     task_ref: str
-    artifacts: tuple[ProjectionArtifact, ...]
+    batch: ProjectionBatch
 
 
 class InternalPolicyProvider(Protocol):
@@ -95,20 +161,41 @@ class InternalPolicyProvider(Protocol):
 
 
 class InternalPolicyGate:
-    """Validate requests and delegate them to one host-supplied provider."""
+    """Validate requests and source-neutrally delegate to a host provider."""
 
-    def __init__(self, provider: InternalPolicyProvider) -> None:
+    def __init__(
+        self,
+        provider: InternalPolicyProvider,
+        *,
+        private_error_sink: Callable[[Exception], None] | None = None,
+    ) -> None:
         for method in ("check_plan", "check_candidate", "check_projection"):
             if not callable(getattr(provider, method, None)):
                 raise TypeError(f"provider must implement {method}")
+        if private_error_sink is not None and not callable(private_error_sink):
+            raise TypeError("private_error_sink must be callable")
         self._provider = provider
+        self._private_error_sink = private_error_sink
 
-    def check_plan(self, *, task_ref: str, plan: Mapping[str, object]) -> GateDecision:
+    def check_plan(
+        self,
+        *,
+        task_ref: str,
+        task_projection: Mapping[str, object],
+        plan: Mapping[str, object],
+    ) -> GateDecision:
         self._require_task_ref(task_ref)
+        if not isinstance(task_projection, Mapping):
+            raise TypeError("task_projection must be a mapping")
         if not isinstance(plan, Mapping):
             raise TypeError("plan must be a mapping")
-        return self._require_decision(
-            self._provider.check_plan(PlanCheckRequest(task_ref=task_ref, plan=plan))
+        return self._invoke(
+            self._provider.check_plan,
+            PlanCheckRequest(
+                task_ref=task_ref,
+                task_projection=task_projection,
+                plan=plan,
+            ),
         )
 
     def check_candidate(
@@ -119,47 +206,56 @@ class InternalPolicyGate:
         observations: Mapping[str, object],
     ) -> GateDecision:
         self._require_task_ref(task_ref)
-        if FULL_SHA.fullmatch(candidate_head_sha) is None:
+        if not isinstance(candidate_head_sha, str) or FULL_SHA.fullmatch(candidate_head_sha) is None:
             raise ValueError("candidate_head_sha must be a full lowercase commit SHA")
         if not isinstance(observations, Mapping):
             raise TypeError("observations must be a mapping")
-        return self._require_decision(
-            self._provider.check_candidate(
-                CandidateCheckRequest(
-                    task_ref=task_ref,
-                    candidate_head_sha=candidate_head_sha,
-                    observations=observations,
-                )
-            )
+        return self._invoke(
+            self._provider.check_candidate,
+            CandidateCheckRequest(
+                task_ref=task_ref,
+                candidate_head_sha=candidate_head_sha,
+                observations=observations,
+            ),
         )
 
-    def check_projection(
-        self,
-        *,
-        task_ref: str,
-        artifacts: Sequence[ProjectionArtifact],
-    ) -> GateDecision:
+    def check_projection(self, *, task_ref: str, batch: ProjectionBatch) -> GateDecision:
         self._require_task_ref(task_ref)
-        normalized = tuple(artifacts)
-        if not normalized:
-            raise ValueError("artifacts must not be empty")
-        if not all(isinstance(item, ProjectionArtifact) for item in normalized):
-            raise TypeError("artifacts must contain ProjectionArtifact values")
-        if any(not item.target_ref.strip() for item in normalized):
-            raise ValueError("artifact target_ref must not be empty")
-        return self._require_decision(
-            self._provider.check_projection(
-                ProjectionCheckRequest(task_ref=task_ref, artifacts=normalized)
-            )
+        if not isinstance(batch, ProjectionBatch):
+            raise TypeError("batch must be ProjectionBatch")
+        batch.validate_digest()
+        return self._invoke(
+            self._provider.check_projection,
+            ProjectionCheckRequest(task_ref=task_ref, batch=batch),
         )
+
+    def _invoke(self, method: Callable[[object], object], request: object) -> GateDecision:
+        try:
+            value = method(request)
+            if not isinstance(value, GateDecision):
+                raise TypeError("provider must return GateDecision")
+            return value
+        except Exception as error:
+            self._record_private_error(error)
+            return GateDecision(
+                GateStatus.BLOCKED,
+                (
+                    GateFinding(
+                        code="internal_check_unavailable",
+                        message="内部検査を完了できませんでした",
+                    ),
+                ),
+            )
+
+    def _record_private_error(self, error: Exception) -> None:
+        if self._private_error_sink is None:
+            return
+        try:
+            self._private_error_sink(error)
+        except Exception:
+            pass
 
     @staticmethod
     def _require_task_ref(task_ref: str) -> None:
         if not isinstance(task_ref, str) or not task_ref.strip():
             raise ValueError("task_ref must not be empty")
-
-    @staticmethod
-    def _require_decision(value: object) -> GateDecision:
-        if not isinstance(value, GateDecision):
-            raise TypeError("provider must return GateDecision")
-        return value

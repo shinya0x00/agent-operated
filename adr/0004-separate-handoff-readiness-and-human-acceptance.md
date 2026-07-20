@@ -1,6 +1,6 @@
 # ADR-0004: handoff readinessとHuman Account acceptanceを分離する
 
-- Status: Accepted
+- Status: Accepted; conformance vocabulary superseded by ADR-0007 and ADR-0008
 - Date: 2026-07-18
 - Decision owner: operator
 - Scope: `00-lab/agent-operated/`

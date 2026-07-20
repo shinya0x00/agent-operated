@@ -14,7 +14,9 @@ from typing import Any
 
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
-ISSUE_URL = re.compile(r"^https://github\.com/[^/\s]+/[^/\s]+/issues/[1-9][0-9]*$")
+ISSUE_URL = re.compile(
+    r"^https://github\.com/([^/\s]+)/([^/\s]+)/issues/([1-9][0-9]*)$"
+)
 PR_URL = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s]+)/pull/([1-9][0-9]*)$")
 
 
@@ -44,6 +46,27 @@ def actor(value: object) -> tuple[str, int] | None:
     ):
         return None
     return value["login"], value["id"]
+
+
+def human_actor_from_profile(path: Path | None) -> tuple[str, int] | None:
+    profile = load_object(path)
+    if profile is None:
+        return None
+    if (
+        profile.get("profile_version") != 1
+        or profile.get("merge_policy") != "human_only"
+        or profile.get("human_only_operations") != ["acceptance_decision"]
+        or actor(profile.get("machine_actor")) is None
+    ):
+        return None
+    return actor(profile.get("human_actor"))
+
+
+def repository_from(match: re.Match[str] | None) -> tuple[str, str] | None:
+    if match is None:
+        return None
+    owner, repository = match.group(1), match.group(2)
+    return owner.casefold(), repository.casefold()
 
 
 def observe_live_pr(pr_ref: str, gh_command: str) -> dict[str, Any] | None:
@@ -77,6 +100,7 @@ def observe_live_pr(pr_ref: str, gh_command: str) -> dict[str, Any] | None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", nargs="?", type=Path)
+    parser.add_argument("--profile", type=Path)
     parser.add_argument("--pr-json", type=Path)
     parser.add_argument("--allow-fixture", action="store_true")
     parser.add_argument("--gh-command", default="gh")
@@ -98,22 +122,33 @@ def main(argv: list[str] | None = None) -> int:
     if data is None:
         findings.append({"kind": "invalid_acceptance_input"})
         data = {}
+    if set(data) - {"task_ref", "candidate_head_sha", "pr_ref", "human_actor"}:
+        findings.append({"kind": "unexpected_acceptance_field"})
+    if "human_actor" in data:
+        findings.append({"kind": "request_human_actor_forbidden"})
 
     task_ref = data.get("task_ref")
     candidate = data.get("candidate_head_sha")
     pr_ref = data.get("pr_ref")
-    expected_actor = actor(data.get("human_actor"))
-    if not isinstance(task_ref, str) or ISSUE_URL.fullmatch(task_ref) is None:
+    task_match = ISSUE_URL.fullmatch(task_ref) if isinstance(task_ref, str) else None
+    pr_match = PR_URL.fullmatch(pr_ref) if isinstance(pr_ref, str) else None
+    task_repository = repository_from(task_match)
+    pr_repository = repository_from(pr_match)
+    expected_actor = human_actor_from_profile(args.profile)
+
+    if task_match is None:
         findings.append({"kind": "invalid_task_ref"})
         task_ref = None
     if not isinstance(candidate, str) or FULL_SHA.fullmatch(candidate) is None:
         findings.append({"kind": "invalid_candidate_head"})
         candidate = None
-    if not isinstance(pr_ref, str) or PR_URL.fullmatch(pr_ref) is None:
+    if pr_match is None:
         findings.append({"kind": "invalid_pr_ref"})
         pr_ref = None
+    if task_repository is not None and pr_repository is not None and task_repository != pr_repository:
+        findings.append({"kind": "cross_repository_binding"})
     if expected_actor is None:
-        findings.append({"kind": "invalid_human_actor"})
+        findings.append({"kind": "invalid_actor_profile"})
 
     fixture_mode = args.pr_json is not None
     if fixture_mode and not args.allow_fixture:
@@ -130,6 +165,17 @@ def main(argv: list[str] | None = None) -> int:
 
     merged_by: tuple[str, int] | None = None
     if isinstance(pr, dict):
+        base_full_name = pr.get("base", {}).get("repo", {}).get("full_name")
+        observed_base = (
+            tuple(part.casefold() for part in base_full_name.split("/", 1))
+            if isinstance(base_full_name, str) and base_full_name.count("/") == 1
+            else None
+        )
+        if observed_base is None:
+            findings.append({"kind": "pr_repository_unavailable"})
+        elif task_repository is not None and observed_base != task_repository:
+            findings.append({"kind": "pr_repository_mismatch"})
+
         pr_head = pr.get("head", {}).get("sha")
         merged_at = pr.get("merged_at")
         merged_by = actor(pr.get("merged_by"))
@@ -142,17 +188,23 @@ def main(argv: list[str] | None = None) -> int:
             findings.append({"kind": "wrong_merge_actor"})
 
     kinds = {item["kind"] for item in findings}
-    if not findings:
-        acceptance_state = "observed"
-    elif kinds & {
+    unavailable = {
         "invalid_acceptance_input",
         "invalid_task_ref",
         "invalid_candidate_head",
         "invalid_pr_ref",
-        "invalid_human_actor",
+        "request_human_actor_forbidden",
+        "unexpected_acceptance_field",
+        "cross_repository_binding",
+        "invalid_actor_profile",
         "fixture_not_authoritative",
         "pr_acquisition_failed",
-    }:
+        "pr_repository_unavailable",
+        "pr_repository_mismatch",
+    }
+    if not findings:
+        acceptance_state = "observed"
+    elif kinds & unavailable:
         acceptance_state = "unavailable"
     elif "stale_candidate" in kinds:
         acceptance_state = "stale"

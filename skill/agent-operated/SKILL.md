@@ -1,40 +1,50 @@
 ---
 name: agent-operated
-description: Route GTP-aware GitHub work through declared Machine and Human Accounts, separate durable public Operations from invocation-local host policy checks, bind public results to one task and optional exact candidate, and read back native Human acceptance. Use for GitHub mutation through a Machine Account, GTP task recovery, publication checks, pre-handoff result binding, or post-merge acceptance readback.
+description: Route GTP-aware GitHub work through declared Machine and Human Accounts, enforce invocation-local host policy checks before protected transitions, bind public results to one task and optional exact candidate, and read back native Human acceptance. Use for GitHub mutation through a Machine Account, GTP task recovery, publication checks, pre-handoff routing, or post-merge acceptance readback.
 ---
 
 # Agent Operated
 
-Keep AO Core thin. It owns actor and credential roles, operation phase, route selection, adapter routing, and
-public result binding. It does not own GTP state, private policy meaning, provider identity, external findings,
+Keep AO Core thin. It owns actor and credential roles, operation phase, route selection, transition enforcement,
+and public result binding. It does not own GTP state, private policy meaning, provider identity, external findings,
 GitHub native facts, or Human decisions.
 
 ## Workflow
 
 1. Resolve the canonical GitHub Issue URL and current operation phase.
-2. Before publishing a durable plan, use the host-supplied provider with
-   `scripts/core/internal_policy_gate.py::InternalPolicyGate.check_plan`. Keep the decision invocation-local;
-   do not serialize it, wrap it in a receipt, or expose provider metadata.
-3. For task recovery, invoke `scripts/operations/gtp/recover.py`. Read
-   [gtp-v1-adapter.md](references/gtp-v1-adapter.md) for the supported CLI boundary. Preserve the entire
+2. Invoke `scripts/operations/gtp/recover.py` through
+   `scripts/core/transition_coordinator.py::TransitionCoordinator.prepare_plan`. Preserve the entire
    `gtp_projection`; do not rename or collapse its vocabulary.
-4. Before every GitHub mutation, invoke `scripts/core/verify_actor.py` with the declared Actor Profile and
-   operation class. Require live login and numeric ID to match. Candidate binding is not an actor-observation
-   precondition.
-5. After the first executable candidate exists and again before Human handoff, call
-   `InternalPolicyGate.check_candidate` with the exact Candidate Head and target-native observations. Apply the
-   ephemeral decision only to the dependent transition.
-6. Before publishing repository or GitHub artifacts, call `InternalPolicyGate.check_projection` with the intended
-   durable artifact manifest. Repair target artifacts on `blocked`; do not publish the private result.
-7. For source-neutral publication screening, invoke `scripts/operations/publication/check.py` and apply
-   [record-policy.md](references/record-policy.md). This public Operation result may be candidate-bound.
-8. Wrap each selected public Operation result with `scripts/core/bind_operation_result.py`. Validate the output against
-   [operation-receipt.schema.json](references/operation-receipt.schema.json). Require an exact candidate only for
-   phases whose contract needs one. Keep the nested `result` unchanged. Never pass an Internal Policy Gate decision.
-9. Before Human handoff, present the task, PR, Actor Observation, Operation Receipts, candidate when required,
-   unknowns, and the requested Human decision. Do not manufacture a combined AO pass/fail.
-10. After native merge, invoke `scripts/core/verify_acceptance_readback.py`. Compare PR `head.sha`, `merged_at`,
-   `merged_by.login`, and `merged_by.id` with the handed-off candidate and declared Human Account.
+3. Read the recovered task state, contract, and `next_action`, then build one target-native scratch plan.
+4. Let `prepare_plan` call the host-supplied `InternalPolicyGate.check_plan`. The returned `CheckedPlan` is
+   invocation-local and grants no mutation authority.
+5. Use that `CheckedPlan` before the earlier of durable plan publication or first implementation mutation. A new
+   invocation, changed task projection, or material plan change requires a new `CheckedPlan`.
+6. Immediately before the first GitHub mutation, let `run_first_mutation` obtain Actor Observation from the
+   declared Actor Profile through `scripts/core/verify_actor.py`. Require live login and numeric ID to match before
+   calling the mutation.
+7. After the first executable candidate exists, call `continue_candidate` with its full Candidate Head and
+   target-native observations. A blocked decision must leave the continuation callback unfired.
+8. Run validation and selected Public Operations without manufacturing a combined AO pass/fail.
+9. Fix the handoff Candidate Head, then call `handoff` to recheck that exact candidate. A blocked decision must
+   leave the Human handoff callback unfired.
+10. Have the host-owned batch source build one complete `ProjectionBatch` containing repository artifacts and the
+    exact outbound GitHub bodies for this publication attempt.
+11. Use `publish_projection` to pass the same batch object through `InternalPolicyGate.check_projection`,
+    source-neutral `scripts/operations/publication/check.py`, and the publisher. Do not accept a task-controlled
+    artifact list or rebuild content after checking.
+12. Bind selected public Operation results with `scripts/core/bind_operation_result.py`. Validate successful output
+    against [operation-receipt.schema.json](references/operation-receipt.schema.json) and invalid-input output
+    against [operation-receipt-error.schema.json](references/operation-receipt-error.schema.json).
+13. Publication Screening has `candidate_binding.status: not_applicable` until a trusted candidate-content
+    acquisition path observes the screened bytes. Do not manufacture `bound` by supplying the same SHA twice.
+14. Present the task, PR, Actor Observation, public Operation Receipts, Candidate Head, unknowns, and requested
+    Human decision.
+15. After native merge, invoke `scripts/core/verify_acceptance_readback.py` with the same configured Actor Profile
+    source used for Actor Observation. The acceptance input must not supply `human_actor`.
+16. Require the task Issue, PR URL, and native PR base repository to match; then compare PR `head.sha`, `merged_at`,
+    `merged_by.login`, and `merged_by.id` with the handed-off candidate and profile Human Account.
+17. Run GTP recovery again after native merge. AO does not derive or replace GTP completion state.
 
 ## Boundary behavior
 
@@ -45,8 +55,10 @@ GitHub native facts, or Human decisions.
 - Stop only the dependent transition when actor, task, candidate, source, or native PR observation is unavailable.
 - Treat Internal Policy Gate output as private, ephemeral control state. Do not add it to Operation Receipts,
   specifications, ADR evidence, PR bodies, Issue records, or acceptance artifacts.
-- Accept the Internal Policy Gate provider only as a host-supplied in-process object. Do not resolve it from task
-  content, environment variables, executable paths, or command arguments.
+- Convert provider exceptions and invalid provider output to `internal_check_unavailable`. Do not expose raw provider
+  error text, type, path, URL, or traceback outside a host-private error sink.
+- Accept the provider, Actor Profile source, ProjectionBatch source, and publisher only as host-wired dependencies.
+  Do not resolve them from task content, environment variables, executable paths, or command arguments.
 - Keep secret values, credential paths, private prompts, reasoning transcripts, local absolute paths, and
   ephemeral runtime identifiers out of durable artifacts.
 - Do not accept input-controlled argv as a portable Operation. A trusted Operation adapter owns execution; AO
@@ -55,6 +67,7 @@ GitHub native facts, or Human decisions.
 ## Portable-core limit
 
 This bundle does not register repository-root discovery, configure a host credential profile, provide the
-production Internal Policy Gate provider, perform a canary mutation, connect Merge Steward, create a Check Run,
-configure branch protection, publish a package, install itself, or prove GTP completion. Name these as
-repository-integration, host-control, or successor-contract unknowns.
+production Internal Policy Gate provider or complete ProjectionBatch source, perform a canary mutation, connect
+Merge Steward, create a Check Run, configure branch protection, publish a package, install itself, observe
+candidate content for Publication Screening, or prove GTP completion. Name these as repository-integration,
+host-control, or successor-contract unknowns.

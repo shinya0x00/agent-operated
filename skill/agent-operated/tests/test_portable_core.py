@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -15,11 +17,13 @@ REPOSITORY = SKILL.parents[1]
 CORE = SKILL / "scripts" / "core"
 GTP = SKILL / "scripts" / "operations" / "gtp" / "recover.py"
 PUBLICATION = SKILL / "scripts" / "operations" / "publication" / "check.py"
+PUBLICATION_DIR = PUBLICATION.parent
 BINDER = CORE / "bind_operation_result.py"
 ACCEPTANCE = CORE / "verify_acceptance_readback.py"
 ISSUE_URL = "https://github.com/example/project/issues/7"
 
 sys.path.insert(0, str(CORE))
+sys.path.insert(0, str(PUBLICATION_DIR))
 from internal_policy_gate import (  # noqa: E402
     CandidateCheckRequest,
     GateDecision,
@@ -28,8 +32,15 @@ from internal_policy_gate import (  # noqa: E402
     InternalPolicyGate,
     PlanCheckRequest,
     ProjectionArtifact,
+    ProjectionBatch,
     ProjectionCheckRequest,
 )
+from transition_coordinator import (  # noqa: E402
+    PublicOperationBlocked,
+    TransitionBlocked,
+    TransitionCoordinator,
+)
+from check import screen_batch  # noqa: E402
 
 
 class RecordingPolicyProvider:
@@ -97,6 +108,33 @@ class PortableCoreTests(unittest.TestCase):
         source = self.write_json(directory, name, value)
         return self.run_json([sys.executable, str(BINDER), str(source)])
 
+    def coordinator(
+        self,
+        provider: RecordingPolicyProvider,
+        *,
+        recover_task=None,
+        build_plan=None,
+        observe_actor=None,
+        batch_source=None,
+        screening=None,
+        publisher=None,
+    ) -> TransitionCoordinator:
+        return TransitionCoordinator(
+            InternalPolicyGate(provider),
+            recover_task=recover_task or (lambda task_ref: {"state": "ready"}),
+            build_plan=build_plan or (lambda projection: {"scope": "candidate"}),
+            observe_actor=observe_actor or (lambda: True),
+            batch_source=batch_source
+            or (
+                lambda head: ProjectionBatch.build(
+                    candidate_head_sha=head,
+                    artifacts=(ProjectionArtifact("PR_BODY", b"public"),),
+                )
+            ),
+            screening=screening or screen_batch,
+            publisher=publisher or (lambda batch: None),
+        )
+
     def test_smoke_fires_every_registered_attachment(self) -> None:
         skill = (SKILL / "SKILL.md").read_text(encoding="utf-8")
         attachments = {
@@ -122,8 +160,16 @@ class PortableCoreTests(unittest.TestCase):
         provider = RecordingPolicyProvider()
         gate = InternalPolicyGate(provider)
         candidate = "a" * 40
+        batch = ProjectionBatch.build(
+            candidate_head_sha=candidate,
+            artifacts=(ProjectionArtifact("PURPOSE.md", b"public content"),),
+        )
         decisions = (
-            gate.check_plan(task_ref=ISSUE_URL, plan={"scope": "candidate"}),
+            gate.check_plan(
+                task_ref=ISSUE_URL,
+                task_projection={"state": "in_progress"},
+                plan={"scope": "candidate"},
+            ),
             gate.check_candidate(
                 task_ref=ISSUE_URL,
                 candidate_head_sha=candidate,
@@ -131,7 +177,7 @@ class PortableCoreTests(unittest.TestCase):
             ),
             gate.check_projection(
                 task_ref=ISSUE_URL,
-                artifacts=(ProjectionArtifact("PURPOSE.md", "public content"),),
+                batch=batch,
             ),
         )
         self.assertTrue(all(item.status is GateStatus.PROCEED for item in decisions))
@@ -143,7 +189,11 @@ class PortableCoreTests(unittest.TestCase):
     def test_internal_policy_gate_is_host_supplied_and_invocation_local(self) -> None:
         provider = RecordingPolicyProvider()
         gate = InternalPolicyGate(provider)
-        decision = gate.check_plan(task_ref=ISSUE_URL, plan={"scope": "candidate"})
+        decision = gate.check_plan(
+            task_ref=ISSUE_URL,
+            task_projection={"state": "in_progress"},
+            plan={"scope": "candidate"},
+        )
 
         self.assertFalse(hasattr(gate, "to_json"))
         self.assertFalse(hasattr(decision, "to_dict"))
@@ -166,15 +216,46 @@ class PortableCoreTests(unittest.TestCase):
                 observations={},
             )
 
+        private_marker = "https://private.example.invalid/config /private/provider/path"
+        private_errors: list[Exception] = []
+
         class InvalidProvider(RecordingPolicyProvider):
             def check_projection(self, request: ProjectionCheckRequest) -> GateDecision:
                 return {"status": "proceed"}  # type: ignore[return-value]
 
-        with self.assertRaises(TypeError):
-            InternalPolicyGate(InvalidProvider()).check_projection(
+        batch = ProjectionBatch.build(
+            candidate_head_sha="a" * 40,
+            artifacts=(ProjectionArtifact("PURPOSE.md", b"public content"),),
+        )
+        decision = InternalPolicyGate(
+            InvalidProvider(),
+            private_error_sink=private_errors.append,
+        ).check_projection(task_ref=ISSUE_URL, batch=batch)
+        self.assertEqual(GateStatus.BLOCKED, decision.status)
+        self.assertEqual("internal_check_unavailable", decision.findings[0].code)
+        self.assertTrue(private_errors)
+
+        class RaisingProvider(RecordingPolicyProvider):
+            def check_plan(self, request: PlanCheckRequest) -> GateDecision:
+                raise RuntimeError(private_marker)
+
+        captured_errors: list[Exception] = []
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            decision = InternalPolicyGate(
+                RaisingProvider(),
+                private_error_sink=captured_errors.append,
+            ).check_plan(
                 task_ref=ISSUE_URL,
-                artifacts=(ProjectionArtifact("PURPOSE.md", "public content"),),
+                task_projection={"state": "ready"},
+                plan={"scope": "candidate"},
             )
+        public_text = repr(decision) + str(decision) + stdout.getvalue() + stderr.getvalue()
+        self.assertNotIn(private_marker, public_text)
+        self.assertNotIn("private.example.invalid", public_text)
+        self.assertNotIn("/private/provider/path", public_text)
+        self.assertEqual(private_marker, str(captured_errors[0]))
 
         with self.assertRaises(TypeError):
             GateDecision("proceed")  # type: ignore[arg-type]
@@ -188,6 +269,195 @@ class PortableCoreTests(unittest.TestCase):
             GateStatus.BLOCKED,
             GateDecision(GateStatus.BLOCKED, (finding,)).status,
         )
+
+    def test_transition_coordinator_blocks_protected_callbacks(self) -> None:
+        finding = GateFinding(code="plan_invalid", message="plan must be repaired")
+
+        class BlockedProvider(RecordingPolicyProvider):
+            def check_plan(self, request: PlanCheckRequest) -> GateDecision:
+                return GateDecision(GateStatus.BLOCKED, (finding,))
+
+            def check_candidate(self, request: CandidateCheckRequest) -> GateDecision:
+                return GateDecision(GateStatus.BLOCKED, (finding,))
+
+            def check_projection(self, request: ProjectionCheckRequest) -> GateDecision:
+                return GateDecision(GateStatus.BLOCKED, (finding,))
+
+        calls = {"actor": 0, "mutation": 0, "candidate": 0, "publisher": 0, "handoff": 0}
+        coordinator = self.coordinator(
+            BlockedProvider(),
+            observe_actor=lambda: calls.__setitem__("actor", calls["actor"] + 1) or True,
+            publisher=lambda batch: calls.__setitem__("publisher", calls["publisher"] + 1),
+        )
+        with self.assertRaises(TransitionBlocked):
+            coordinator.prepare_plan(task_ref=ISSUE_URL)
+        self.assertEqual(0, calls["actor"])
+        self.assertEqual(0, calls["mutation"])
+
+        with self.assertRaises(TransitionBlocked):
+            coordinator.continue_candidate(
+                task_ref=ISSUE_URL,
+                candidate_head_sha="a" * 40,
+                observations={},
+                callback=lambda: calls.__setitem__("candidate", calls["candidate"] + 1),
+            )
+        with self.assertRaises(TransitionBlocked):
+            coordinator.publish_projection(
+                task_ref=ISSUE_URL,
+                candidate_head_sha="a" * 40,
+            )
+        with self.assertRaises(TransitionBlocked):
+            coordinator.handoff(
+                task_ref=ISSUE_URL,
+                candidate_head_sha="a" * 40,
+                observations={},
+                callback=lambda: calls.__setitem__("handoff", calls["handoff"] + 1),
+            )
+        self.assertEqual(
+            {"actor": 0, "mutation": 0, "candidate": 0, "publisher": 0, "handoff": 0},
+            calls,
+        )
+
+        class RaisingProvider(RecordingPolicyProvider):
+            def check_plan(self, request: PlanCheckRequest) -> GateDecision:
+                raise RuntimeError("https://private.example.invalid /private/provider/path")
+
+        raising = self.coordinator(
+            RaisingProvider(),
+            observe_actor=lambda: calls.__setitem__("actor", calls["actor"] + 1) or True,
+        )
+        with self.assertRaises(TransitionBlocked) as blocked:
+            raising.prepare_plan(task_ref=ISSUE_URL)
+        self.assertEqual("AO transition blocked", str(blocked.exception))
+        self.assertEqual(0, calls["actor"])
+        self.assertEqual(0, calls["mutation"])
+
+    def test_projection_batch_is_same_object_for_screening_and_publish(self) -> None:
+        provider = RecordingPolicyProvider()
+        batch = ProjectionBatch.build(
+            candidate_head_sha="a" * 40,
+            artifacts=(
+                ProjectionArtifact("PURPOSE.md", b"public file"),
+                ProjectionArtifact("PR_BODY", b"public body"),
+            ),
+        )
+        observed: list[ProjectionBatch] = []
+
+        def screening(value: ProjectionBatch) -> dict:
+            observed.append(value)
+            return screen_batch(value)
+
+        coordinator = self.coordinator(
+            provider,
+            batch_source=lambda head: batch,
+            screening=screening,
+            publisher=lambda value: observed.append(value),
+        )
+
+        coordinator.publish_projection(
+            task_ref=ISSUE_URL,
+            candidate_head_sha="a" * 40,
+        )
+        self.assertIs(batch, observed[0])
+        self.assertIs(batch, observed[1])
+        batch.validate_digest()
+
+        unsafe = ProjectionBatch.build(
+            candidate_head_sha="a" * 40,
+            artifacts=(ProjectionArtifact("PR_BODY", b"GH_TOKEN=private-value"),),
+        )
+        published: list[ProjectionBatch] = []
+        blocked_coordinator = self.coordinator(
+            provider,
+            batch_source=lambda head: unsafe,
+            screening=screen_batch,
+            publisher=published.append,
+        )
+        with self.assertRaises(PublicOperationBlocked):
+            blocked_coordinator.publish_projection(
+                task_ref=ISSUE_URL,
+                candidate_head_sha="a" * 40,
+            )
+        self.assertEqual([], published)
+
+        with self.assertRaises(ValueError):
+            ProjectionBatch.build(
+                candidate_head_sha="a" * 40,
+                artifacts=(
+                    ProjectionArtifact("PR_BODY", b"one"),
+                    ProjectionArtifact("PR_BODY", b"two"),
+                ),
+            )
+
+        private_marker = "/private/batch/source"
+
+        def failing_source(head: str | None) -> ProjectionBatch:
+            raise RuntimeError(private_marker)
+
+        source_failure = self.coordinator(provider, batch_source=failing_source)
+        with self.assertRaises(TransitionBlocked) as blocked:
+            source_failure.publish_projection(
+                task_ref=ISSUE_URL,
+                candidate_head_sha="a" * 40,
+            )
+        self.assertNotIn(private_marker, str(blocked.exception))
+
+    def test_checked_plan_is_rechecked_and_digest_bound(self) -> None:
+        provider = RecordingPolicyProvider()
+        projections = iter((
+            {"state": "ready", "contract": "v1"},
+            {"state": "ready", "contract": "v2"},
+        ))
+        plans = iter(({"scope": "one"}, {"scope": "two"}))
+        coordinator = self.coordinator(
+            provider,
+            recover_task=lambda task_ref: next(projections),
+            build_plan=lambda projection: next(plans),
+        )
+        first = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        second = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        self.assertNotEqual(first.digest, second.digest)
+        self.assertEqual(2, len([item for item in provider.requests if isinstance(item, PlanCheckRequest)]))
+
+        calls: list[str] = []
+        with self.assertRaises(TransitionBlocked):
+            coordinator.run_first_mutation(
+                first,
+                mutation=lambda: calls.append("mutation"),
+            )
+        self.assertEqual([], calls)
+
+        object.__setattr__(second, "plan_json", '{"scope":"tampered"}')
+        with self.assertRaises(TransitionBlocked):
+            coordinator.run_first_mutation(
+                second,
+                mutation=lambda: calls.append("mutation"),
+            )
+        self.assertEqual([], calls)
+
+        fresh_coordinator = self.coordinator(provider)
+        with self.assertRaises(TransitionBlocked):
+            fresh_coordinator.run_first_mutation(
+                first,
+                mutation=lambda: None,
+            )
+
+    def test_plan_publication_uses_projection_batch_route(self) -> None:
+        provider = RecordingPolicyProvider()
+        published: list[ProjectionBatch] = []
+        coordinator = self.coordinator(
+            provider,
+            batch_source=lambda head: ProjectionBatch.build(
+                candidate_head_sha=head,
+                artifacts=(ProjectionArtifact("PLAN_BODY", b"target-native plan"),),
+            ),
+            publisher=published.append,
+        )
+        checked = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        result, _ = coordinator.publish_plan(checked)
+        self.assertEqual("proceed", result["verdict"])
+        self.assertEqual(1, len(published))
+        self.assertIsNone(published[0].candidate_head_sha)
 
     def test_actor_observation_does_not_require_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -265,6 +535,12 @@ class PortableCoreTests(unittest.TestCase):
             self.assertEqual("not_applicable", receipt["candidate_binding"]["status"])
             self.assertEqual(opaque_result, receipt["result"])
             self.assertNotIn("verdict", receipt)
+            receipt_schema = json.loads(
+                (SKILL / "references" / "operation-receipt.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(set(receipt_schema["required"]), set(receipt))
 
             candidate = "a" * 40
             code, receipt, _ = self.bind(
@@ -303,6 +579,16 @@ class PortableCoreTests(unittest.TestCase):
             )
             self.assertEqual(2, completed.returncode)
             self.assertNotIn(secret, completed.stdout + completed.stderr)
+            error = json.loads(completed.stdout)
+            self.assertEqual(1, error["error_version"])
+            self.assertEqual("operation_receipt_binding", error["decision_scope"])
+            self.assertNotIn("receipt_version", error)
+            error_schema = json.loads(
+                (SKILL / "references" / "operation-receipt-error.schema.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(set(error_schema["required"]), set(error))
 
             value = self.receipt_input({}, required=False)
             value["source_ref"] = "https://example.com/result?token=" + secret
@@ -316,6 +602,9 @@ class PortableCoreTests(unittest.TestCase):
             )
             self.assertEqual(2, completed.returncode)
             self.assertNotIn(secret, completed.stdout + completed.stderr)
+            error = json.loads(completed.stdout)
+            self.assertEqual("invalid_input", error["error"])
+            self.assertNotIn("candidate_binding", error)
 
     def fake_gtp(self, directory: Path) -> Path:
         return self.make_executable(
@@ -468,7 +757,6 @@ raise SystemExit(9)
                 "task_ref": ISSUE_URL,
                 "candidate_head_sha": candidate,
                 "pr_ref": "https://github.com/example/project/pull/8",
-                "human_actor": {"login": "human", "id": 202},
             },
         )
 
@@ -477,10 +765,12 @@ raise SystemExit(9)
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
             source = self.acceptance_input(directory, candidate)
+            profile = self.write_json(directory, "profile.json", self.actor_profile())
             pr = self.write_json(
                 directory,
                 "pr.json",
                 {
+                    "base": {"repo": {"full_name": "example/project"}},
                     "head": {"sha": candidate},
                     "merged_at": "2026-07-20T00:00:00Z",
                     "merged_by": {"login": "human", "id": 202},
@@ -490,6 +780,8 @@ raise SystemExit(9)
                 sys.executable,
                 str(ACCEPTANCE),
                 str(source),
+                "--profile",
+                str(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -505,6 +797,8 @@ raise SystemExit(9)
                 sys.executable,
                 str(ACCEPTANCE),
                 str(source),
+                "--profile",
+                str(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -519,6 +813,8 @@ raise SystemExit(9)
                 sys.executable,
                 str(ACCEPTANCE),
                 str(source),
+                "--profile",
+                str(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -533,6 +829,8 @@ raise SystemExit(9)
                 sys.executable,
                 str(ACCEPTANCE),
                 str(source),
+                "--profile",
+                str(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -546,15 +844,23 @@ raise SystemExit(9)
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
             source = self.acceptance_input(directory, candidate)
+            profile = self.write_json(directory, "profile.json", self.actor_profile())
             pr = self.write_json(
                 directory,
                 "pr.json",
-                {"head": {"sha": candidate}, "merged_at": None, "merged_by": None},
+                {
+                    "base": {"repo": {"full_name": "example/project"}},
+                    "head": {"sha": candidate},
+                    "merged_at": None,
+                    "merged_by": None,
+                },
             )
             code, output, _ = self.run_json([
                 sys.executable,
                 str(ACCEPTANCE),
                 str(source),
+                "--profile",
+                str(profile),
                 "--pr-json",
                 str(pr),
             ])
@@ -567,6 +873,7 @@ raise SystemExit(9)
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
             source = self.acceptance_input(directory, candidate)
+            profile = self.write_json(directory, "profile.json", self.actor_profile())
             fake_gh = self.make_executable(
                 directory,
                 "acceptance-gh",
@@ -578,6 +885,7 @@ if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
     raise SystemExit(8)
 if sys.argv[1:] == ["api", "repos/example/project/pulls/8"]:
     print(json.dumps({
+        "base": {"repo": {"full_name": "example/project"}},
         "head": {"sha": os.environ["CANDIDATE"]},
         "merged_at": "2026-07-20T00:00:00Z",
         "merged_by": {"login": "human", "id": 202}
@@ -596,12 +904,85 @@ raise SystemExit(9)
                 sys.executable,
                 str(ACCEPTANCE),
                 str(source),
+                "--profile",
+                str(profile),
                 "--gh-command",
                 str(fake_gh),
             ], environment=environment)
             self.assertEqual(0, code)
             self.assertEqual("observed", output["acceptance_state"])
             self.assertEqual("live_github_api", output["observation_source"])
+
+    def test_acceptance_rejects_request_actor_and_cross_repository_binding(self) -> None:
+        candidate = "a" * 40
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            profile = self.write_json(directory, "profile.json", self.actor_profile())
+            source = self.write_json(
+                directory,
+                "acceptance.json",
+                {
+                    "task_ref": ISSUE_URL,
+                    "candidate_head_sha": candidate,
+                    "pr_ref": "https://github.com/other/project/pull/8",
+                    "human_actor": {"login": "machine", "id": 101},
+                },
+            )
+            pr = self.write_json(
+                directory,
+                "pr.json",
+                {
+                    "base": {"repo": {"full_name": "other/project"}},
+                    "head": {"sha": candidate},
+                    "merged_at": "2026-07-20T00:00:00Z",
+                    "merged_by": {"login": "machine", "id": 101},
+                },
+            )
+            code, output, _ = self.run_json([
+                sys.executable,
+                str(ACCEPTANCE),
+                str(source),
+                "--profile",
+                str(profile),
+                "--pr-json",
+                str(pr),
+                "--allow-fixture",
+            ])
+            self.assertEqual(2, code)
+            self.assertEqual("unavailable", output["acceptance_state"])
+            kinds = {item["kind"] for item in output["findings"]}
+            self.assertIn("request_human_actor_forbidden", kinds)
+            self.assertIn("cross_repository_binding", kinds)
+
+    def test_acceptance_rejects_native_base_repository_mismatch(self) -> None:
+        candidate = "a" * 40
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            source = self.acceptance_input(directory, candidate)
+            profile = self.write_json(directory, "profile.json", self.actor_profile())
+            pr = self.write_json(
+                directory,
+                "pr.json",
+                {
+                    "base": {"repo": {"full_name": "other/project"}},
+                    "head": {"sha": candidate},
+                    "merged_at": "2026-07-20T00:00:00Z",
+                    "merged_by": {"login": "human", "id": 202},
+                },
+            )
+            code, output, _ = self.run_json([
+                sys.executable,
+                str(ACCEPTANCE),
+                str(source),
+                "--profile",
+                str(profile),
+                "--pr-json",
+                str(pr),
+                "--allow-fixture",
+            ])
+            self.assertEqual(2, code)
+            self.assertEqual("unavailable", output["acceptance_state"])
+            self.assertIn("pr_repository_mismatch", {item["kind"] for item in output["findings"]})
 
     def test_generic_command_executor_is_absent(self) -> None:
         self.assertFalse((SKILL / "scripts" / "verify_wiring_evidence.py").exists())
@@ -639,8 +1020,16 @@ raise SystemExit(9)
         schema = json.loads(
             (SKILL / "references" / "operation-receipt.schema.json").read_text(encoding="utf-8")
         )
+        error_schema = json.loads(
+            (SKILL / "references" / "operation-receipt-error.schema.json").read_text(
+                encoding="utf-8"
+            )
+        )
         self.assertFalse(schema["additionalProperties"])
         self.assertNotIn("verdict", schema["properties"])
+        self.assertFalse(error_schema["additionalProperties"])
+        self.assertNotIn("receipt_version", error_schema["properties"])
+        self.assertEqual("invalid_input", error_schema["properties"]["error"]["const"])
         context = (REPOSITORY / "CONTEXT.md").read_text(encoding="utf-8")
         for term in (
             "AO Core",
@@ -649,6 +1038,7 @@ raise SystemExit(9)
             "Operation Receipt",
             "Actor Observation",
             "Candidate Binding",
+            "Projection Batch",
         ):
             self.assertIn(f"**{term}**", context)
         for implementation_term in ("scripts/", "bind_operation_result.py", "recover.py"):

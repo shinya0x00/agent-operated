@@ -2,7 +2,7 @@
 
 Status: private design baseline
 
-Decision records: [ADR-0001](adr/0001-redefine-agent-operated.md), [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md)
+Decision records: [ADR-0001](adr/0001-redefine-agent-operated.md), [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md)
 
 Language: Japanese is canonical
 
@@ -55,6 +55,8 @@ wrong actor、unknown actor、stale Candidate Binding、欠落したOperation re
 Public Delivery Routeは、Human Accountへ提示する独立したOperation resultだけをOperation Receiptへ束縛する。
 Private Control Routeはhost固定のInternal Policy Gateをphase transition前に呼ぶが、そのdecision、provider identity、
 version、内部規則、診断情報をdurable artifactへ投影しない。
+`blocked`なら依存するmutation、publication、handoff callbackを呼ばない。plan checkはGTP recovery後に作る
+target-native planへ適用し、plan公開または最初のmutationの早い方をgateする。
 
 ## Supporting purposes
 
@@ -81,8 +83,9 @@ immutable referenceまたは各Operationが定める参照方法で解決し、O
 束縛する。Private Control Routeはsource-neutralなtransition decisionだけをinvocation-localに使用する。
 
 AOのportable coreは、AO Core、agent-facing skill、GTP Operation、Publication Screening、Internal Policy Gate port、
-Acceptance Readbackとtestを所有する。repository rootのprotocol配置、agent discovery、workflow、settings、release、
-installation、およびprivate provider実装はRepository Integrationまたはhostが所有する。
+Transition Coordinator、Projection Batch、Acceptance Readbackとtestを所有する。repository rootのprotocol配置、agent
+discovery、workflow、settings、release、installation、private provider実装、production batch sourceはRepository
+Integrationまたはhostが所有する。
 
 ## Non-goals
 
@@ -95,6 +98,8 @@ AOは次を目的にしない。
 - GTPのRecord、state、transition、Evidence validationの再実装
 - private providerの規則、identity、version、診断、provenanceの公開または複製
 - Internal Policy Gate decisionのOperation Receipt化
+- blocked decision後に依存するcallbackを実行すること
+- 検査後に再構築したpublication payloadを公開すること
 - Merge Steward findings、report UI、または判断語彙の再実装
 - 外部Operation resultを一つのAO pass/failまたは総合安全スコアへ変換すること
 - inputから任意commandまたはInternal Policy Gate providerを選択できる汎用executor
@@ -109,10 +114,14 @@ AOは次を目的にしない。
 ### Portable core baseline
 
 portable coreは、repository名へ依存しないraw skill pathからActor Observation、GTP Operation、Publication
-Screening、Internal Policy Gate port、Operation Receipt binding、Acceptance Readbackが実発火したとき完成する。
+Screening、Internal Policy Gate、Transition Coordinator、Operation Receipt binding、Acceptance Readbackが実発火したとき
+完成する。GTP recoveryはplan作成より先に発火し、blocked private decisionでは依存callbackが発火せず、同一Projection
+Batchがcheck、screening、publishへ渡る。
 公開Operation固有resultは変更せずtaskとoptional Candidate Headへ束縛でき、private decisionはReceiptまたは
-durable Evidenceへ出力されない。このbaselineはGTP task completion、Human Account acceptance、production provider、
-Repository Integration、Merge Steward接続をClaimしない。
+durable Evidenceへ出力されない。Publication Screeningはtrusted candidate-content acquisitionがない間
+`not_applicable`であり、Acceptance Readbackはversioned Actor ProfileのHuman Accountだけを使用する。このbaselineはGTP
+task completion、Human Account acceptance、production provider、production batch completeness、Repository Integration、
+Merge Steward接続をClaimしない。
 
 ### Operational baseline
 

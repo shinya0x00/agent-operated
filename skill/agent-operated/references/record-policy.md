@@ -25,3 +25,7 @@ Return only finding kind and line number. Never reproduce matched content.
 Pattern screening is one source-neutral public Operation result, not AO Core conformance and not proof that a
 document contains no secret. Keep host secret scanners and review in place when Repository Integration supplies
 them. Internal Policy Gate decisions are a separate Private Control Route and must not be added to this result.
+
+Until a trusted adapter acquires content from an exact candidate, bind this Operation with
+`candidate_binding.status: not_applicable`. Caller-supplied equality between expected and observed SHA fields is
+not candidate observation.

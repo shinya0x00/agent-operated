@@ -11,10 +11,11 @@ import unittest
 SKILL = Path(__file__).resolve().parents[1]
 CORE = SKILL / "scripts" / "core"
 GTP = SKILL / "scripts" / "operations" / "gtp" / "recover.py"
-PUBLICATION = SKILL / "scripts" / "operations" / "publication" / "check.py"
+PUBLICATION_DIR = SKILL / "scripts" / "operations" / "publication"
 ISSUE_URL = "https://github.com/example/project/issues/7"
 
 sys.path.insert(0, str(CORE))
+sys.path.insert(0, str(PUBLICATION_DIR))
 from internal_policy_gate import (  # noqa: E402
     CandidateCheckRequest,
     GateDecision,
@@ -22,24 +23,27 @@ from internal_policy_gate import (  # noqa: E402
     InternalPolicyGate,
     PlanCheckRequest,
     ProjectionArtifact,
+    ProjectionBatch,
     ProjectionCheckRequest,
 )
+from transition_coordinator import CheckedPlan, TransitionCoordinator  # noqa: E402
+from check import screen_batch  # noqa: E402
 
 
 class ProceedingPolicyProvider:
-    def __init__(self) -> None:
-        self.phases: list[str] = []
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
 
     def check_plan(self, request: PlanCheckRequest) -> GateDecision:
-        self.phases.append("plan")
+        self.events.append("check_plan")
         return GateDecision(GateStatus.PROCEED)
 
     def check_candidate(self, request: CandidateCheckRequest) -> GateDecision:
-        self.phases.append("candidate")
+        self.events.append("check_candidate")
         return GateDecision(GateStatus.PROCEED)
 
     def check_projection(self, request: ProjectionCheckRequest) -> GateDecision:
-        self.phases.append("projection")
+        self.events.append("check_projection")
         return GateDecision(GateStatus.PROCEED)
 
 
@@ -49,15 +53,8 @@ class OperationHubEndToEndTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return path
 
-    def run_json(self, command: list[str], *, environment: dict[str, str] | None = None) -> tuple[int, dict]:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            env=environment,
-            timeout=30,
-        )
+    def run_json(self, command: list[str]) -> tuple[int, dict]:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=30)
         try:
             value = json.loads(completed.stdout)
         except json.JSONDecodeError as error:
@@ -96,17 +93,12 @@ print(json.dumps({
         source = self.write_json(directory, name, value)
         return self.run_json([sys.executable, str(CORE / "bind_operation_result.py"), str(source)])
 
-    def test_raw_hub_path_preserves_results_and_separates_candidate_binding(self) -> None:
+    def test_real_portable_route_preserves_order_and_boundaries(self) -> None:
         candidate = "a" * 40
+        events: list[str] = []
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
-            provider = ProceedingPolicyProvider()
-            gate = InternalPolicyGate(provider)
-            plan_decision = gate.check_plan(
-                task_ref=ISSUE_URL,
-                plan={"scope": "portable boundary repair"},
-            )
-            self.assertEqual(GateStatus.PROCEED, plan_decision.status)
+            provider = ProceedingPolicyProvider(events)
             profile = self.write_json(
                 directory,
                 "profile.json",
@@ -119,62 +111,86 @@ print(json.dumps({
                 },
             )
             observed_user = self.write_json(directory, "user.json", {"login": "machine", "id": 101})
-            code, actor_result = self.run_json([
-                sys.executable,
-                str(CORE / "verify_actor.py"),
-                "--profile",
-                str(profile),
-                "--user-json",
-                str(observed_user),
-                "--allow-fixture",
-            ])
-            self.assertEqual(0, code)
-            self.assertIsNone(actor_result["candidate_head_sha"])
-            self.assertEqual("proceed", actor_result["verdict"])
-
             fake_gtp = self.make_fake_gtp(directory)
-            code, gtp_result = self.run_json([
-                sys.executable,
-                str(GTP),
-                "--issue-url",
-                ISSUE_URL,
-                "--gtp-command",
-                str(fake_gtp),
-            ])
-            self.assertEqual(0, code)
-            code, recovery_receipt = self.bind(
-                directory,
-                "recovery-input.json",
-                {
-                    "operation": "gtp",
-                    "phase": "task_recovery",
-                    "task_ref": ISSUE_URL,
-                    "implementation_version": "1.0.1",
-                    "source_ref": ISSUE_URL,
-                    "candidate_required": False,
-                    "result": gtp_result,
-                },
-            )
-            self.assertEqual(0, code)
-            self.assertEqual("not_applicable", recovery_receipt["candidate_binding"]["status"])
-            self.assertEqual(gtp_result, recovery_receipt["result"])
-            self.assertNotIn("verdict", recovery_receipt)
 
-            publication = directory / "publication.md"
-            publication.write_text("candidate: " + candidate + "\n", encoding="utf-8")
-            candidate_decision = gate.check_candidate(
+            def recover_task(task_ref: str) -> dict:
+                events.append("gtp_recovery")
+                self.assertEqual(ISSUE_URL, task_ref)
+                code, result = self.run_json([
+                    sys.executable,
+                    str(GTP),
+                    "--issue-url",
+                    ISSUE_URL,
+                    "--gtp-command",
+                    str(fake_gtp),
+                ])
+                self.assertEqual(0, code)
+                return result
+
+            def build_plan(projection: dict) -> dict:
+                events.append("build_plan")
+                self.assertEqual("unmanaged", projection["gtp_projection"]["state"])
+                return {"scope": "portable boundary repair", "allowed_paths": ["skill/"]}
+
+            actor_result: dict = {}
+
+            def observe_actor() -> dict:
+                events.append("actor_observation")
+                code, result = self.run_json([
+                    sys.executable,
+                    str(CORE / "verify_actor.py"),
+                    "--profile",
+                    str(profile),
+                    "--user-json",
+                    str(observed_user),
+                    "--allow-fixture",
+                ])
+                self.assertEqual(0, code)
+                actor_result.update(result)
+                return result
+
+            artifact = ProjectionArtifact("publication.md", b"public candidate\n")
+            published_batches: list[ProjectionBatch] = []
+            coordinator = TransitionCoordinator(
+                InternalPolicyGate(provider),
+                recover_task=recover_task,
+                build_plan=build_plan,
+                observe_actor=observe_actor,
+                batch_source=lambda head: ProjectionBatch.build(
+                    candidate_head_sha=head,
+                    artifacts=(artifact,),
+                ),
+                screening=screen_batch,
+                publisher=lambda batch: published_batches.append(batch),
+            )
+            checked = coordinator.prepare_plan(task_ref=ISSUE_URL)
+            self.assertIsInstance(checked, CheckedPlan)
+
+            coordinator.run_first_mutation(
+                checked,
+                mutation=lambda: events.append("mutation"),
+            )
+            coordinator.continue_candidate(
                 task_ref=ISSUE_URL,
                 candidate_head_sha=candidate,
-                observations={"actor": actor_result, "recovery": gtp_result},
+                observations={"actor": actor_result},
+                callback=lambda: events.append("candidate_continuation"),
             )
-            projection_decision = gate.check_projection(
+
+            screening_result, _ = coordinator.publish_projection(
                 task_ref=ISSUE_URL,
-                artifacts=(ProjectionArtifact("publication.md", publication.read_text()),),
+                candidate_head_sha=candidate,
             )
-            self.assertEqual(GateStatus.PROCEED, candidate_decision.status)
-            self.assertEqual(GateStatus.PROCEED, projection_decision.status)
-            code, publication_result = self.run_json([sys.executable, str(PUBLICATION), str(publication)])
-            self.assertEqual(0, code)
+            self.assertEqual("proceed", screening_result["verdict"])
+            self.assertEqual(1, len(published_batches))
+
+            coordinator.handoff(
+                task_ref=ISSUE_URL,
+                candidate_head_sha=candidate,
+                observations={"tests": "passed"},
+                callback=lambda: events.append("handoff"),
+            )
+
             code, publication_receipt = self.bind(
                 directory,
                 "publication-input.json",
@@ -184,17 +200,12 @@ print(json.dumps({
                     "task_ref": ISSUE_URL,
                     "implementation_version": "1",
                     "source_ref": ISSUE_URL,
-                    "candidate_required": True,
-                    "candidate_head_sha": candidate,
-                    "observed_head_sha": candidate,
-                    "result": publication_result,
+                    "candidate_required": False,
+                    "result": screening_result,
                 },
             )
             self.assertEqual(0, code)
-            self.assertEqual("bound", publication_receipt["candidate_binding"]["status"])
-            self.assertEqual(publication_result, publication_receipt["result"])
-            self.assertEqual(["plan", "candidate", "projection"], provider.phases)
-            self.assertNotIn("internal_policy", json.dumps(publication_receipt))
+            self.assertEqual("not_applicable", publication_receipt["candidate_binding"]["status"])
 
             acceptance_input = self.write_json(
                 directory,
@@ -203,13 +214,13 @@ print(json.dumps({
                     "task_ref": ISSUE_URL,
                     "candidate_head_sha": candidate,
                     "pr_ref": "https://github.com/example/project/pull/8",
-                    "human_actor": {"login": "human", "id": 202},
                 },
             )
             pr = self.write_json(
                 directory,
                 "pr.json",
                 {
+                    "base": {"repo": {"full_name": "example/project"}},
                     "head": {"sha": candidate},
                     "merged_at": "2026-07-20T00:00:00Z",
                     "merged_by": {"login": "human", "id": 202},
@@ -219,13 +230,30 @@ print(json.dumps({
                 sys.executable,
                 str(CORE / "verify_acceptance_readback.py"),
                 str(acceptance_input),
+                "--profile",
+                str(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
             ])
             self.assertEqual(0, code)
             self.assertEqual("observed", acceptance["acceptance_state"])
-            self.assertNotIn("verdict", acceptance)
+
+        self.assertEqual(
+            [
+                "gtp_recovery",
+                "build_plan",
+                "check_plan",
+                "actor_observation",
+                "mutation",
+                "check_candidate",
+                "candidate_continuation",
+                "check_projection",
+                "check_candidate",
+                "handoff",
+            ],
+            events,
+        )
 
 
 if __name__ == "__main__":

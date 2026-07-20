@@ -52,6 +52,10 @@ _Avoid_: AO verdict、総合合否、Internal Policy Gate result
 公開予定artifactから公開不適切な値の候補を検出し、matched valueを再掲せずfindingを返すsource-neutralなOperation。
 _Avoid_: private policy conformance、secret absence proof
 
+**Projection Batch**:
+一回のpublicationで検査と公開の対象になる、完全かつ不変なartifact集合。
+_Avoid_: caller-selected artifact list、検査後に再構築したpublication payload
+
 **Actor Observation**:
 一つのcredential circuitからGitHubが返したloginとstable numeric IDの観測結果。
 _Avoid_: Candidate Binding、actor claim
