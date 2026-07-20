@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-operated/actor-profile.schema.json",
+  "title": "Agent Operated Actor Profile",
+  "$comment": "Portable Core additionally requires machine_actor.id and human_actor.id to differ; the shared runtime parser enforces this cross-field invariant.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "profile_version",
+    "machine_actor",
+    "human_actor",
+    "human_only_operations",
+    "merge_policy"
+  ],
+  "properties": {
+    "profile_version": {
+      "const": 1
+    },
+    "machine_actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "human_actor": {
+      "$ref": "#/$defs/actor"
+    },
+    "human_only_operations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "enum": [
+          "acceptance_decision"
+        ]
+      }
+    },
+    "merge_policy": {
+      "enum": [
+        "human_only"
+      ]
+    }
+  },
+  "$defs": {
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "login",
+        "id"
+      ],
+      "properties": {
+        "login": {
+          "type": "string",
+          "minLength": 1
+        },
+        "id": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    }
+  }
+}
