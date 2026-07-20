@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare a sanitized live GitHub user observation with an AO actor profile."""
+"""Observe a GitHub principal and compare it with an AO actor profile."""
 
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.smoke:
         emit({
-            "decision_scope": "ao_wiring",
+            "decision_scope": "ao_operation_wiring",
             "attachment": "actor_preflight",
             "fired": True,
             "validated": True,
@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if OPERATION_CLASS.fullmatch(args.operation_class) is None:
         emit({
-            "decision_scope": "ao_conformance",
+            "decision_scope": "ao_actor_observation",
             "findings": [{"kind": "invalid_operation_class"}],
             "verdict": "blocked",
             "authority": "none",
@@ -119,30 +119,20 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.candidate_head is not None and FULL_SHA.fullmatch(args.candidate_head) is None:
         emit({
-            "decision_scope": "ao_conformance",
+            "decision_scope": "ao_actor_observation",
             "operation_class": args.operation_class,
             "findings": [{"kind": "invalid_candidate_head"}],
             "verdict": "blocked",
             "authority": "none",
         })
         return 2
-    if args.operation_class != "read_private_task" and args.candidate_head is None:
-        emit({
-            "decision_scope": "ao_conformance",
-            "operation_class": args.operation_class,
-            "findings": [{"kind": "candidate_head_required"}],
-            "verdict": "blocked",
-            "authority": "none",
-        })
-        return 2
-
     profile = load_object(args.profile) if args.profile else None
     if not valid_profile(profile):
         profile = None
     expected = profile.get(args.role) if profile else None
     if not valid_actor(expected):
         emit({
-            "decision_scope": "ao_conformance",
+            "decision_scope": "ao_actor_observation",
             "operation_class": args.operation_class,
             "findings": [{"kind": "invalid_actor_profile"}],
             "verdict": "blocked",
@@ -152,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.user_json and not args.allow_fixture:
         emit({
-            "decision_scope": "ao_conformance",
+            "decision_scope": "ao_actor_observation",
             "operation_class": args.operation_class,
             "findings": [{"kind": "fixture_not_authoritative"}],
             "verdict": "blocked",
@@ -164,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     observed = load_object(args.user_json) if fixture_mode else observe_live_user(args.gh_command)
     if not valid_actor(observed):
         emit({
-            "decision_scope": "ao_conformance",
+            "decision_scope": "ao_actor_observation",
             "operation_class": args.operation_class,
             "findings": [{"kind": "actor_acquisition_failed"}],
             "verdict": "blocked",
@@ -175,7 +165,7 @@ def main(argv: list[str] | None = None) -> int:
     matches = observed["login"] == expected["login"] and observed["id"] == expected["id"]
     observed_at = args.observed_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     envelope: dict[str, Any] = {
-        "decision_scope": "ao_detector_test" if fixture_mode else "ao_conformance",
+        "decision_scope": "ao_detector_test" if fixture_mode else "ao_actor_observation",
         "operation_class": args.operation_class,
         "candidate_head_sha": args.candidate_head,
         "actor_role": args.role,

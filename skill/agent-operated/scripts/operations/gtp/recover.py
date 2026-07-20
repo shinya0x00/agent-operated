@@ -46,10 +46,15 @@ def clean_environment() -> dict[str, str]:
     return environment
 
 
-def run_command(command: list[str], *, environment: dict[str, str], timeout: int = 30) -> subprocess.CompletedProcess[str] | None:
+def run_executable(
+    executable: str,
+    *arguments: str,
+    environment: dict[str, str],
+    timeout: int = 30,
+) -> subprocess.CompletedProcess[str] | None:
     try:
         return subprocess.run(
-            command,
+            [executable, *arguments],
             check=False,
             capture_output=True,
             text=True,
@@ -75,20 +80,18 @@ def extract_projection(output: str) -> dict[str, Any] | None:
 
 
 def verify_private_actor(profile: Path, gh_command: str, environment: dict[str, str]) -> bool:
-    verifier = Path(__file__).with_name("verify_actor.py")
-    result = run_command(
-        [
-            sys.executable,
-            str(verifier),
-            "--profile",
-            str(profile),
-            "--role",
-            "machine_actor",
-            "--operation-class",
-            "read_private_task",
-            "--gh-command",
-            gh_command,
-        ],
+    verifier = Path(__file__).resolve().parents[2] / "core" / "verify_actor.py"
+    result = run_executable(
+        sys.executable,
+        str(verifier),
+        "--profile",
+        str(profile),
+        "--role",
+        "machine_actor",
+        "--operation-class",
+        "read_private_task",
+        "--gh-command",
+        gh_command,
         environment=environment,
     )
     if result is None or result.returncode != 0:
@@ -113,8 +116,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.smoke:
         emit({
-            "decision_scope": "ao_wiring",
-            "attachment": "gtp_recovery",
+            "decision_scope": "ao_operation_wiring",
+            "attachment": "gtp_operation",
             "fired": True,
             "validated": True,
             "authority": "none",
@@ -125,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
         return blocked("invalid_issue_url")
 
     environment = clean_environment()
-    version = run_command([args.gtp_command, "--version"], environment=environment)
+    version = run_executable(args.gtp_command, "--version", environment=environment)
     if version is None or version.returncode != 0:
         return blocked("gtp_executable_unavailable", issue_url=args.issue_url)
     observed_version = version.stdout.strip()
@@ -135,13 +138,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.private:
         if args.profile is None or not verify_private_actor(args.profile, args.gh_command, environment):
             return blocked("private_read_actor_unverified", issue_url=args.issue_url)
-        token_result = run_command([args.gh_command, "auth", "token"], environment=environment)
+        token_result = run_executable(args.gh_command, "auth", "token", environment=environment)
         if token_result is None or token_result.returncode != 0 or not token_result.stdout.strip():
             return blocked("private_read_credential_unavailable", issue_url=args.issue_url)
         environment["GITHUB_TOKEN"] = token_result.stdout.strip()
 
-    result = run_command(
-        [args.gtp_command, "status", args.issue_url],
+    result = run_executable(
+        args.gtp_command,
+        "status",
+        args.issue_url,
         environment=environment,
     )
     environment.pop("GITHUB_TOKEN", None)

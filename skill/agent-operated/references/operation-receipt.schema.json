@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/agent-operated/operation-receipt.schema.json",
+  "title": "Agent Operated Operation Receipt",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "receipt_version",
+    "operation",
+    "phase",
+    "task_ref",
+    "implementation_version",
+    "source_ref",
+    "candidate_binding",
+    "result",
+    "findings",
+    "authority"
+  ],
+  "properties": {
+    "receipt_version": {
+      "const": 1
+    },
+    "operation": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+    },
+    "phase": {
+      "enum": [
+        "task_recovery",
+        "pre_mutation",
+        "pre_publication",
+        "pre_handoff",
+        "post_merge"
+      ]
+    },
+    "task_ref": {
+      "type": "string",
+      "format": "uri"
+    },
+    "implementation_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_ref": {
+      "type": "string",
+      "format": "uri"
+    },
+    "candidate_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "required",
+        "status",
+        "candidate_head_sha",
+        "observed_head_sha"
+      ],
+      "properties": {
+        "required": {
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "not_applicable",
+            "bound",
+            "stale",
+            "unavailable"
+          ]
+        },
+        "candidate_head_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "observed_head_sha": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{40}$"
+        }
+      }
+    },
+    "result": {
+      "type": "object"
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "authority": {
+      "const": "none"
+    }
+  }
+}
