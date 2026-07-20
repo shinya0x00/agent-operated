@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
+from pathlib import PurePosixPath
 import re
 from typing import Callable, Mapping, Protocol, Sequence
 
@@ -12,6 +13,39 @@ from typing import Callable, Mapping, Protocol, Sequence
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 FULL_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 FINDING_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+ARTIFACT_ID = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+URI_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+CLOSED_TARGET_REFS = {
+    "PLAN_BODY",
+    "PR_BODY",
+    "ISSUE_BODY",
+    "ISSUE_COMMENT",
+    "PR_COMMENT",
+}
+
+
+def require_public_target_ref(value: str) -> None:
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise ValueError("target_ref must be a non-empty canonical value")
+    if value in CLOSED_TARGET_REFS:
+        return
+    if (
+        "\\" in value
+        or "?" in value
+        or "#" in value
+        or URI_SCHEME.match(value)
+        or any(ord(character) < 32 for character in value)
+    ):
+        raise ValueError("target_ref is not public-safe")
+    path = PurePosixPath(value)
+    if (
+        path.is_absolute()
+        or value.endswith("/")
+        or str(path) != value
+        or not path.parts
+        or any(part in {"", ".", ".."} for part in path.parts)
+    ):
+        raise ValueError("target_ref must be a repository-relative POSIX path")
 
 
 class GateStatus(str, Enum):
@@ -32,10 +66,8 @@ class GateFinding:
             raise ValueError("finding code must use target-native snake_case")
         if not isinstance(self.message, str) or not self.message.strip():
             raise ValueError("finding message must not be empty")
-        if self.target_ref is not None and (
-            not isinstance(self.target_ref, str) or not self.target_ref.strip()
-        ):
-            raise ValueError("target_ref must not be empty when present")
+        if self.target_ref is not None:
+            require_public_target_ref(self.target_ref)
 
 
 @dataclass(frozen=True)
@@ -63,6 +95,7 @@ class PlanCheckRequest:
     task_ref: str
     task_projection: Mapping[str, object]
     plan: Mapping[str, object]
+    publication_artifact: "ProjectionArtifact"
 
 
 @dataclass(frozen=True)
@@ -74,18 +107,21 @@ class CandidateCheckRequest:
 
 @dataclass(frozen=True)
 class ProjectionArtifact:
+    artifact_id: str
     target_ref: str
     content: bytes
 
     def __post_init__(self) -> None:
-        if not isinstance(self.target_ref, str) or not self.target_ref.strip():
-            raise ValueError("target_ref must not be empty")
+        if not isinstance(self.artifact_id, str) or ARTIFACT_ID.fullmatch(self.artifact_id) is None:
+            raise ValueError("artifact_id must be an opaque snake_case identifier")
+        require_public_target_ref(self.target_ref)
         if not isinstance(self.content, bytes):
             raise TypeError("content must be bytes")
 
 
 @dataclass(frozen=True)
 class ProjectionBatch:
+    checked_plan_digest: str
     candidate_head_sha: str | None
     artifacts: tuple[ProjectionArtifact, ...]
     digest: str
@@ -94,17 +130,23 @@ class ProjectionBatch:
     def build(
         cls,
         *,
+        checked_plan_digest: str,
         candidate_head_sha: str | None,
         artifacts: Sequence[ProjectionArtifact],
     ) -> "ProjectionBatch":
         normalized = tuple(artifacts)
         return cls(
+            checked_plan_digest=checked_plan_digest,
             candidate_head_sha=candidate_head_sha,
             artifacts=normalized,
-            digest=cls.compute_digest(candidate_head_sha, normalized),
+            digest=cls.compute_digest(checked_plan_digest, candidate_head_sha, normalized),
         )
 
     def __post_init__(self) -> None:
+        if not isinstance(self.checked_plan_digest, str) or FULL_DIGEST.fullmatch(
+            self.checked_plan_digest
+        ) is None:
+            raise ValueError("checked_plan_digest must be a lowercase SHA-256 value")
         if self.candidate_head_sha is not None and (
             not isinstance(self.candidate_head_sha, str)
             or FULL_SHA.fullmatch(self.candidate_head_sha) is None
@@ -114,20 +156,29 @@ class ProjectionBatch:
             raise ValueError("artifacts must be a non-empty tuple")
         if not all(isinstance(item, ProjectionArtifact) for item in self.artifacts):
             raise TypeError("artifacts must contain ProjectionArtifact values")
-        target_refs = [item.target_ref for item in self.artifacts]
-        if len(target_refs) != len(set(target_refs)):
-            raise ValueError("artifact target_ref values must be unique")
+        artifact_ids = [item.artifact_id for item in self.artifacts]
+        if len(artifact_ids) != len(set(artifact_ids)):
+            raise ValueError("artifact_id values must be unique")
         if not isinstance(self.digest, str) or FULL_DIGEST.fullmatch(self.digest) is None:
             raise ValueError("digest must be a lowercase SHA-256 value")
-        if self.digest != self.compute_digest(self.candidate_head_sha, self.artifacts):
+        if self.digest != self.compute_digest(
+            self.checked_plan_digest,
+            self.candidate_head_sha,
+            self.artifacts,
+        ):
             raise ValueError("projection batch digest does not match its content")
 
     def validate_digest(self) -> None:
-        if self.digest != self.compute_digest(self.candidate_head_sha, self.artifacts):
+        if self.digest != self.compute_digest(
+            self.checked_plan_digest,
+            self.candidate_head_sha,
+            self.artifacts,
+        ):
             raise ValueError("projection batch digest does not match its content")
 
     @staticmethod
     def compute_digest(
+        checked_plan_digest: str,
         candidate_head_sha: str | None,
         artifacts: Sequence[ProjectionArtifact],
     ) -> str:
@@ -137,8 +188,10 @@ class ProjectionBatch:
             digest.update(len(value).to_bytes(8, "big"))
             digest.update(value)
 
+        add(checked_plan_digest.encode("ascii"))
         add((candidate_head_sha or "").encode("ascii"))
         for artifact in artifacts:
+            add(artifact.artifact_id.encode("ascii"))
             add(artifact.target_ref.encode("utf-8"))
             add(artifact.content)
         return digest.hexdigest()
@@ -183,18 +236,22 @@ class InternalPolicyGate:
         task_ref: str,
         task_projection: Mapping[str, object],
         plan: Mapping[str, object],
+        publication_artifact: ProjectionArtifact,
     ) -> GateDecision:
         self._require_task_ref(task_ref)
         if not isinstance(task_projection, Mapping):
             raise TypeError("task_projection must be a mapping")
         if not isinstance(plan, Mapping):
             raise TypeError("plan must be a mapping")
+        if not isinstance(publication_artifact, ProjectionArtifact):
+            raise TypeError("publication_artifact must be ProjectionArtifact")
         return self._invoke(
             self._provider.check_plan,
             PlanCheckRequest(
                 task_ref=task_ref,
                 task_projection=task_projection,
                 plan=plan,
+                publication_artifact=publication_artifact,
             ),
         )
 

@@ -13,8 +13,12 @@ candidateを直接確認し、通常laneのacceptance decisionを行う宣言済
 _Avoid_: operator signal、human evidence
 
 **Actor Profile**:
-Machine AccountとHuman Accountのlogin、stable numeric ID、human-only operationを定義するAOの正本。
+異なるnumeric IDを持つMachine AccountとHuman Account、およびhuman-only operationを定義するAOの正本。
 _Avoid_: credential profile、user config
+
+**Invocation Context**:
+一回のagent invocationで検査済みtask・planとActor Profileを同じtransition系列へ束縛するAOの一時的context。
+_Avoid_: task ledger、mutation authority
 
 **Candidate Head**:
 validation、handoff、acceptanceの対象となるPR source branchのfull commit SHA。
@@ -53,12 +57,16 @@ _Avoid_: AO verdict、総合合否、Internal Policy Gate result
 _Avoid_: private policy conformance、secret absence proof
 
 **Projection Batch**:
-一回のpublicationで検査と公開の対象になる、完全かつ不変なartifact集合。
+一回のpublicationで同じ検査済みplanに属し、検査と公開の対象になる完全かつ不変なartifact集合。
 _Avoid_: caller-selected artifact list、検査後に再構築したpublication payload
 
 **Actor Observation**:
-一つのcredential circuitからGitHubが返したloginとstable numeric IDの観測結果。
-_Avoid_: Candidate Binding、actor claim
+一つのcredential circuitからGitHubがliveに返し、Actor Profileと一致したloginとstable numeric IDの観測結果。
+_Avoid_: fixture result、Candidate Binding、actor claim
+
+**GitHub Mutation Gate**:
+GitHub writeの直前に、そのoperation向けのActor Observationを要求し、不一致ならwriteを発火させないAOの境界。
+_Avoid_: first mutation preflight、mutation authority
 
 **Candidate Binding**:
 Operation resultまたはHuman acceptanceを一つのCandidate Headへ結び付け、その一致、不一致、非適用、取得不能を示すAOの関係。

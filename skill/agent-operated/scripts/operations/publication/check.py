@@ -56,17 +56,17 @@ def emit(value: dict[str, Any]) -> None:
 
 def screen_items(items: Iterable[tuple[str, bytes]]) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
-    for target_ref, content in items:
+    for artifact_id, content in items:
         try:
             source = content.decode("utf-8")
         except (AttributeError, UnicodeDecodeError):
             return {
                 "decision_scope": "publication_screening",
                 "source": "input",
-                "findings": [{"kind": "input_unavailable", "target_ref": target_ref}],
+                "findings": [{"kind": "input_unavailable", "artifact_id": artifact_id}],
                 "verdict": "blocked",
                 "authority": "none",
-                "blocker_ref": target_ref,
+                "blocker_ref": artifact_id,
             }
         seen: set[tuple[str, int]] = set()
         for line_number, line in enumerate(source.splitlines(), start=1):
@@ -74,7 +74,7 @@ def screen_items(items: Iterable[tuple[str, bytes]]) -> dict[str, Any]:
                 if pattern.search(line) is None or (kind, line_number) in seen:
                     continue
                 seen.add((kind, line_number))
-                findings.append({"kind": kind, "line": line_number, "target_ref": target_ref})
+                findings.append({"kind": kind, "line": line_number, "artifact_id": artifact_id})
 
     blocked = bool(findings)
     envelope: dict[str, Any] = {
@@ -86,7 +86,7 @@ def screen_items(items: Iterable[tuple[str, bytes]]) -> dict[str, Any]:
     }
     if blocked:
         first = findings[0]
-        envelope["blocker_ref"] = f"{first['target_ref']}:{first['line']}"
+        envelope["blocker_ref"] = f"{first['artifact_id']}:{first['line']}"
     return envelope
 
 
@@ -102,9 +102,9 @@ def screen_batch(batch: object) -> dict[str, Any]:
         }
     items: list[tuple[str, bytes]] = []
     for artifact in artifacts:
-        target_ref = getattr(artifact, "target_ref", None)
+        artifact_id = getattr(artifact, "artifact_id", None)
         content = getattr(artifact, "content", None)
-        if not isinstance(target_ref, str) or not isinstance(content, bytes):
+        if not isinstance(artifact_id, str) or not isinstance(content, bytes):
             return {
                 "decision_scope": "publication_screening",
                 "source": "input",
@@ -112,7 +112,7 @@ def screen_batch(batch: object) -> dict[str, Any]:
                 "verdict": "blocked",
                 "authority": "none",
             }
-        items.append((target_ref, content))
+        items.append((artifact_id, content))
     return screen_items(items)
 
 

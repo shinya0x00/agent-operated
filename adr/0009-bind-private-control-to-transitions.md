@@ -5,6 +5,7 @@
 - Decision owner: operator
 - Scope: PR #1 / Issue #2
 - Refines: ADR-0008
+- Refined by: ADR-0010
 
 ## Context
 

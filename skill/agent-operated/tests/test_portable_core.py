@@ -24,6 +24,7 @@ ISSUE_URL = "https://github.com/example/project/issues/7"
 
 sys.path.insert(0, str(CORE))
 sys.path.insert(0, str(PUBLICATION_DIR))
+from actor_contract import ActorObservation, ActorProfile  # noqa: E402
 from internal_policy_gate import (  # noqa: E402
     CandidateCheckRequest,
     GateDecision,
@@ -36,6 +37,10 @@ from internal_policy_gate import (  # noqa: E402
     ProjectionCheckRequest,
 )
 from transition_coordinator import (  # noqa: E402
+    CheckedCandidate,
+    HandoffReady,
+    InvocationContext,
+    PlanDraft,
     PublicOperationBlocked,
     TransitionBlocked,
     TransitionCoordinator,
@@ -104,6 +109,32 @@ class PortableCoreTests(unittest.TestCase):
             "merge_policy": "human_only",
         }
 
+    def actor_profile_object(self) -> ActorProfile:
+        return ActorProfile.from_mapping(self.actor_profile())
+
+    def profile_digest(self, path: Path) -> str:
+        return ActorProfile.load(path).digest
+
+    def live_actor_observation(
+        self,
+        profile: ActorProfile,
+        operation_class: str,
+        candidate_head_sha: str | None,
+    ) -> ActorObservation:
+        return ActorObservation(
+            operation_class=operation_class,
+            candidate_head_sha=candidate_head_sha,
+            observed_at="2000-01-01T00:00:00Z",
+            actor=profile.machine_actor,
+            profile_digest=profile.digest,
+        )
+
+    def plan_draft(self, *, body: bytes = b"target-native plan") -> PlanDraft:
+        return PlanDraft.build(
+            plan={"scope": "candidate"},
+            publication_artifact=ProjectionArtifact("plan_body", "PLAN_BODY", body),
+        )
+
     def bind(self, directory: Path, name: str, value: dict) -> tuple[int, dict, str]:
         source = self.write_json(directory, name, value)
         return self.run_json([sys.executable, str(BINDER), str(source)])
@@ -118,17 +149,28 @@ class PortableCoreTests(unittest.TestCase):
         batch_source=None,
         screening=None,
         publisher=None,
+        actor_profile=None,
     ) -> TransitionCoordinator:
+        profile = actor_profile or self.actor_profile_object()
         return TransitionCoordinator(
             InternalPolicyGate(provider),
+            actor_profile=profile,
             recover_task=recover_task or (lambda task_ref: {"state": "ready"}),
-            build_plan=build_plan or (lambda projection: {"scope": "candidate"}),
-            observe_actor=observe_actor or (lambda: True),
+            build_plan=build_plan or (lambda projection: self.plan_draft()),
+            observe_actor=observe_actor
+            or (
+                lambda operation_class, candidate_head_sha: self.live_actor_observation(
+                    profile,
+                    operation_class,
+                    candidate_head_sha,
+                )
+            ),
             batch_source=batch_source
             or (
-                lambda head: ProjectionBatch.build(
-                    candidate_head_sha=head,
-                    artifacts=(ProjectionArtifact("PR_BODY", b"public"),),
+                lambda request: ProjectionBatch.build(
+                    checked_plan_digest=request.checked_plan_digest,
+                    candidate_head_sha=request.candidate_head_sha,
+                    artifacts=(ProjectionArtifact("pr_body", "PR_BODY", b"public"),),
                 )
             ),
             screening=screening or screen_batch,
@@ -160,15 +202,18 @@ class PortableCoreTests(unittest.TestCase):
         provider = RecordingPolicyProvider()
         gate = InternalPolicyGate(provider)
         candidate = "a" * 40
+        plan_artifact = ProjectionArtifact("plan_body", "PLAN_BODY", b"plan")
         batch = ProjectionBatch.build(
+            checked_plan_digest="f" * 64,
             candidate_head_sha=candidate,
-            artifacts=(ProjectionArtifact("PURPOSE.md", b"public content"),),
+            artifacts=(ProjectionArtifact("purpose", "PURPOSE.md", b"public content"),),
         )
         decisions = (
             gate.check_plan(
                 task_ref=ISSUE_URL,
                 task_projection={"state": "in_progress"},
                 plan={"scope": "candidate"},
+                publication_artifact=plan_artifact,
             ),
             gate.check_candidate(
                 task_ref=ISSUE_URL,
@@ -193,6 +238,7 @@ class PortableCoreTests(unittest.TestCase):
             task_ref=ISSUE_URL,
             task_projection={"state": "in_progress"},
             plan={"scope": "candidate"},
+            publication_artifact=ProjectionArtifact("plan_body", "PLAN_BODY", b"plan"),
         )
 
         self.assertFalse(hasattr(gate, "to_json"))
@@ -224,8 +270,9 @@ class PortableCoreTests(unittest.TestCase):
                 return {"status": "proceed"}  # type: ignore[return-value]
 
         batch = ProjectionBatch.build(
+            checked_plan_digest="f" * 64,
             candidate_head_sha="a" * 40,
-            artifacts=(ProjectionArtifact("PURPOSE.md", b"public content"),),
+            artifacts=(ProjectionArtifact("purpose", "PURPOSE.md", b"public content"),),
         )
         decision = InternalPolicyGate(
             InvalidProvider(),
@@ -250,6 +297,7 @@ class PortableCoreTests(unittest.TestCase):
                 task_ref=ISSUE_URL,
                 task_projection={"state": "ready"},
                 plan={"scope": "candidate"},
+                publication_artifact=ProjectionArtifact("plan_body", "PLAN_BODY", b"plan"),
             )
         public_text = repr(decision) + str(decision) + stdout.getvalue() + stderr.getvalue()
         self.assertNotIn(private_marker, public_text)
@@ -263,7 +311,7 @@ class PortableCoreTests(unittest.TestCase):
         finding = GateFinding(
             code="candidate_evidence_missing",
             message="candidate validation evidence is missing",
-            target_ref="tests/",
+            target_ref="tests/evidence.json",
         )
         self.assertEqual(
             GateStatus.BLOCKED,
@@ -283,10 +331,10 @@ class PortableCoreTests(unittest.TestCase):
             def check_projection(self, request: ProjectionCheckRequest) -> GateDecision:
                 return GateDecision(GateStatus.BLOCKED, (finding,))
 
-        calls = {"actor": 0, "mutation": 0, "candidate": 0, "publisher": 0, "handoff": 0}
+        calls = {"actor": 0, "mutation": 0, "publisher": 0}
         coordinator = self.coordinator(
             BlockedProvider(),
-            observe_actor=lambda: calls.__setitem__("actor", calls["actor"] + 1) or True,
+            observe_actor=lambda operation, head: calls.__setitem__("actor", calls["actor"] + 1),
             publisher=lambda batch: calls.__setitem__("publisher", calls["publisher"] + 1),
         )
         with self.assertRaises(TransitionBlocked):
@@ -294,29 +342,7 @@ class PortableCoreTests(unittest.TestCase):
         self.assertEqual(0, calls["actor"])
         self.assertEqual(0, calls["mutation"])
 
-        with self.assertRaises(TransitionBlocked):
-            coordinator.continue_candidate(
-                task_ref=ISSUE_URL,
-                candidate_head_sha="a" * 40,
-                observations={},
-                callback=lambda: calls.__setitem__("candidate", calls["candidate"] + 1),
-            )
-        with self.assertRaises(TransitionBlocked):
-            coordinator.publish_projection(
-                task_ref=ISSUE_URL,
-                candidate_head_sha="a" * 40,
-            )
-        with self.assertRaises(TransitionBlocked):
-            coordinator.handoff(
-                task_ref=ISSUE_URL,
-                candidate_head_sha="a" * 40,
-                observations={},
-                callback=lambda: calls.__setitem__("handoff", calls["handoff"] + 1),
-            )
-        self.assertEqual(
-            {"actor": 0, "mutation": 0, "candidate": 0, "publisher": 0, "handoff": 0},
-            calls,
-        )
+        self.assertEqual({"actor": 0, "mutation": 0, "publisher": 0}, calls)
 
         class RaisingProvider(RecordingPolicyProvider):
             def check_plan(self, request: PlanCheckRequest) -> GateDecision:
@@ -324,7 +350,7 @@ class PortableCoreTests(unittest.TestCase):
 
         raising = self.coordinator(
             RaisingProvider(),
-            observe_actor=lambda: calls.__setitem__("actor", calls["actor"] + 1) or True,
+            observe_actor=lambda operation, head: calls.__setitem__("actor", calls["actor"] + 1),
         )
         with self.assertRaises(TransitionBlocked) as blocked:
             raising.prepare_plan(task_ref=ISSUE_URL)
@@ -332,15 +358,116 @@ class PortableCoreTests(unittest.TestCase):
         self.assertEqual(0, calls["actor"])
         self.assertEqual(0, calls["mutation"])
 
-    def test_projection_batch_is_same_object_for_screening_and_publish(self) -> None:
-        provider = RecordingPolicyProvider()
-        batch = ProjectionBatch.build(
+        proceeding = RecordingPolicyProvider()
+        owner = self.coordinator(proceeding)
+        foreign_context = owner.prepare_plan(task_ref=ISSUE_URL)
+        foreign_candidate = owner.check_candidate(
+            foreign_context,
             candidate_head_sha="a" * 40,
-            artifacts=(
-                ProjectionArtifact("PURPOSE.md", b"public file"),
-                ProjectionArtifact("PR_BODY", b"public body"),
+            observations={},
+        )
+        fresh = self.coordinator(
+            proceeding,
+            publisher=lambda batch: calls.__setitem__("publisher", calls["publisher"] + 1),
+        )
+        for removed_api in ("run_first_mutation", "continue_candidate", "handoff"):
+            self.assertFalse(hasattr(fresh, removed_api))
+        with self.assertRaises(TransitionBlocked):
+            fresh.run_github_mutation(
+                foreign_context,
+                operation_class="commit",
+                mutation=lambda: calls.__setitem__("mutation", calls["mutation"] + 1),
+            )
+        with self.assertRaises(TransitionBlocked):
+            fresh.check_candidate(
+                foreign_context,
+                candidate_head_sha="a" * 40,
+                observations={},
+            )
+        with self.assertRaises(TransitionBlocked):
+            fresh.publish_projection(foreign_context, candidate=foreign_candidate)
+        with self.assertRaises(TransitionBlocked):
+            fresh.prepare_handoff(
+                foreign_context,
+                candidate=foreign_candidate,
+                observations={},
+            )
+        self.assertEqual(0, calls["mutation"])
+        self.assertEqual(0, calls["publisher"])
+
+    def test_actor_observation_strictly_gates_every_github_write(self) -> None:
+        profile = self.actor_profile_object()
+        invalid_observations: tuple[object, ...] = (
+            True,
+            {"verdict": "proceed"},
+            {
+                "decision_scope": "ao_detector_test",
+                "actor_role": "machine_actor",
+                "observation_source": "fixture",
+                "live_actor_verified": False,
+                "verdict": "proceed",
+                "authority": "none",
+                "findings": [],
+            },
+            self.live_actor_observation(profile, "push", None),
+            ActorObservation(
+                operation_class="commit",
+                candidate_head_sha=None,
+                observed_at="2000-01-01T00:00:00Z",
+                actor=profile.machine_actor,
+                profile_digest="f" * 64,
             ),
         )
+        for invalid in invalid_observations:
+            mutations: list[str] = []
+            coordinator = self.coordinator(
+                RecordingPolicyProvider(),
+                observe_actor=lambda operation, head, value=invalid: value,
+            )
+            context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+            with self.assertRaises(TransitionBlocked):
+                coordinator.run_github_mutation(
+                    context,
+                    operation_class="commit",
+                    mutation=lambda: mutations.append("commit"),
+                )
+            self.assertEqual([], mutations)
+
+        observations: list[str] = []
+
+        def observe(operation: str, head: str | None) -> ActorObservation | object:
+            observations.append(operation)
+            if len(observations) == 2:
+                return True
+            return self.live_actor_observation(
+                profile,
+                operation,
+                head,
+            )
+
+        mutations = []
+        coordinator = self.coordinator(
+            RecordingPolicyProvider(),
+            actor_profile=profile,
+            observe_actor=observe,
+        )
+        context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        coordinator.run_github_mutation(
+            context,
+            operation_class="commit",
+            mutation=lambda: mutations.append("commit"),
+        )
+        with self.assertRaises(TransitionBlocked):
+            coordinator.run_github_mutation(
+                context,
+                operation_class="push",
+                mutation=lambda: mutations.append("push"),
+            )
+        self.assertEqual(["commit", "push"], observations)
+        self.assertEqual(["commit"], mutations)
+
+    def test_projection_batch_is_same_object_for_screening_and_publish(self) -> None:
+        provider = RecordingPolicyProvider()
         observed: list[ProjectionBatch] = []
 
         def screening(value: ProjectionBatch) -> dict:
@@ -349,58 +476,96 @@ class PortableCoreTests(unittest.TestCase):
 
         coordinator = self.coordinator(
             provider,
-            batch_source=lambda head: batch,
+            batch_source=lambda request: ProjectionBatch.build(
+                checked_plan_digest=request.checked_plan_digest,
+                candidate_head_sha=request.candidate_head_sha,
+                artifacts=(
+                    ProjectionArtifact("purpose", "PURPOSE.md", b"public file"),
+                    ProjectionArtifact("pr_body", "PR_BODY", b"public body"),
+                ),
+            ),
             screening=screening,
             publisher=lambda value: observed.append(value),
         )
-
-        coordinator.publish_projection(
-            task_ref=ISSUE_URL,
+        context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        candidate = coordinator.check_candidate(
+            context,
             candidate_head_sha="a" * 40,
+            observations={},
         )
-        self.assertIs(batch, observed[0])
-        self.assertIs(batch, observed[1])
-        batch.validate_digest()
+        coordinator.publish_projection(context, candidate=candidate)
+        self.assertIs(observed[0], observed[1])
+        observed[0].validate_digest()
 
-        unsafe = ProjectionBatch.build(
-            candidate_head_sha="a" * 40,
-            artifacts=(ProjectionArtifact("PR_BODY", b"GH_TOKEN=private-value"),),
-        )
         published: list[ProjectionBatch] = []
         blocked_coordinator = self.coordinator(
             provider,
-            batch_source=lambda head: unsafe,
+            batch_source=lambda request: ProjectionBatch.build(
+                checked_plan_digest=request.checked_plan_digest,
+                candidate_head_sha=request.candidate_head_sha,
+                artifacts=(
+                    ProjectionArtifact("pr_body", "PR_BODY", b"GH_TOKEN=private-value"),
+                ),
+            ),
             screening=screen_batch,
             publisher=published.append,
         )
-        with self.assertRaises(PublicOperationBlocked):
-            blocked_coordinator.publish_projection(
-                task_ref=ISSUE_URL,
-                candidate_head_sha="a" * 40,
-            )
+        blocked_context = blocked_coordinator.prepare_plan(task_ref=ISSUE_URL)
+        with self.assertRaises(PublicOperationBlocked) as blocked_publication:
+            blocked_coordinator.publish_projection(blocked_context, candidate=None)
         self.assertEqual([], published)
+        public_result = json.dumps(blocked_publication.exception.result)
+        self.assertNotIn("PR_BODY", public_result)
+        self.assertIn("pr_body", public_result)
 
         with self.assertRaises(ValueError):
             ProjectionBatch.build(
+                checked_plan_digest="f" * 64,
                 candidate_head_sha="a" * 40,
                 artifacts=(
-                    ProjectionArtifact("PR_BODY", b"one"),
-                    ProjectionArtifact("PR_BODY", b"two"),
+                    ProjectionArtifact("duplicate", "PR_BODY", b"one"),
+                    ProjectionArtifact("duplicate", "PR_BODY", b"two"),
                 ),
             )
 
+        for unsafe_ref in (
+            "/Users/example/private-plan.md",
+            "../private-plan.md",
+            "folder\\private-plan.md",
+            "https://private.example/plan",
+            "PURPOSE.md?token=value",
+            "PURPOSE.md#private",
+        ):
+            with self.assertRaises(ValueError):
+                ProjectionArtifact("unsafe", unsafe_ref, b"content")
+
         private_marker = "/private/batch/source"
 
-        def failing_source(head: str | None) -> ProjectionBatch:
+        def failing_source(request: object) -> ProjectionBatch:
             raise RuntimeError(private_marker)
 
         source_failure = self.coordinator(provider, batch_source=failing_source)
+        source_context = source_failure.prepare_plan(task_ref=ISSUE_URL)
         with self.assertRaises(TransitionBlocked) as blocked:
-            source_failure.publish_projection(
-                task_ref=ISSUE_URL,
-                candidate_head_sha="a" * 40,
-            )
+            source_failure.publish_projection(source_context, candidate=None)
         self.assertNotIn(private_marker, str(blocked.exception))
+
+        mismatch_screening: list[ProjectionBatch] = []
+        mismatch = self.coordinator(
+            provider,
+            batch_source=lambda request: ProjectionBatch.build(
+                checked_plan_digest="f" * 64,
+                candidate_head_sha=request.candidate_head_sha,
+                artifacts=(ProjectionArtifact("pr_body", "PR_BODY", b"public"),),
+            ),
+            screening=lambda batch: mismatch_screening.append(batch) or screen_batch(batch),
+            publisher=published.append,
+        )
+        mismatch_context = mismatch.prepare_plan(task_ref=ISSUE_URL)
+        with self.assertRaises(TransitionBlocked):
+            mismatch.publish_projection(mismatch_context, candidate=None)
+        self.assertEqual([], mismatch_screening)
+        self.assertEqual([], published)
 
     def test_checked_plan_is_rechecked_and_digest_bound(self) -> None:
         provider = RecordingPolicyProvider()
@@ -408,7 +573,16 @@ class PortableCoreTests(unittest.TestCase):
             {"state": "ready", "contract": "v1"},
             {"state": "ready", "contract": "v2"},
         ))
-        plans = iter(({"scope": "one"}, {"scope": "two"}))
+        plans = iter((
+            PlanDraft.build(
+                plan={"scope": "one"},
+                publication_artifact=ProjectionArtifact("plan_body", "PLAN_BODY", b"plan one"),
+            ),
+            PlanDraft.build(
+                plan={"scope": "two"},
+                publication_artifact=ProjectionArtifact("plan_body", "PLAN_BODY", b"plan two"),
+            ),
+        ))
         coordinator = self.coordinator(
             provider,
             recover_task=lambda task_ref: next(projections),
@@ -421,43 +595,95 @@ class PortableCoreTests(unittest.TestCase):
 
         calls: list[str] = []
         with self.assertRaises(TransitionBlocked):
-            coordinator.run_first_mutation(
+            coordinator.run_github_mutation(
                 first,
+                operation_class="commit",
                 mutation=lambda: calls.append("mutation"),
             )
         self.assertEqual([], calls)
 
-        object.__setattr__(second, "plan_json", '{"scope":"tampered"}')
+        object.__setattr__(second.checked_plan, "plan_json", '{"scope":"tampered"}')
         with self.assertRaises(TransitionBlocked):
-            coordinator.run_first_mutation(
+            coordinator.run_github_mutation(
                 second,
+                operation_class="commit",
                 mutation=lambda: calls.append("mutation"),
             )
         self.assertEqual([], calls)
 
         fresh_coordinator = self.coordinator(provider)
         with self.assertRaises(TransitionBlocked):
-            fresh_coordinator.run_first_mutation(
+            fresh_coordinator.run_github_mutation(
                 first,
+                operation_class="commit",
                 mutation=lambda: None,
             )
+
+    def test_context_binds_task_profile_and_candidate(self) -> None:
+        provider = RecordingPolicyProvider()
+        coordinator = self.coordinator(provider)
+        first = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        first_candidate = coordinator.check_candidate(
+            first,
+            candidate_head_sha="a" * 40,
+            observations={},
+        )
+        second = coordinator.prepare_plan(
+            task_ref="https://github.com/example/project/issues/8"
+        )
+        with self.assertRaises(TransitionBlocked):
+            coordinator.prepare_handoff(
+                first,
+                candidate=first_candidate,
+                observations={},
+            )
+
+        cross_task_candidate = CheckedCandidate(
+            second.digest,
+            ISSUE_URL,
+            "a" * 40,
+        )
+        with self.assertRaises(TransitionBlocked):
+            coordinator.publish_projection(second, candidate=cross_task_candidate)
+
+        object.__setattr__(second, "actor_profile_digest", "f" * 64)
+        object.__setattr__(
+            second,
+            "digest",
+            InvocationContext.compute_digest(
+                second.checked_plan.digest,
+                second.actor_profile_digest,
+            ),
+        )
+        mutations: list[str] = []
+        with self.assertRaises(TransitionBlocked):
+            coordinator.run_github_mutation(
+                second,
+                operation_class="push",
+                mutation=lambda: mutations.append("push"),
+            )
+        self.assertEqual([], mutations)
 
     def test_plan_publication_uses_projection_batch_route(self) -> None:
         provider = RecordingPolicyProvider()
         published: list[ProjectionBatch] = []
         coordinator = self.coordinator(
             provider,
-            batch_source=lambda head: ProjectionBatch.build(
-                candidate_head_sha=head,
-                artifacts=(ProjectionArtifact("PLAN_BODY", b"target-native plan"),),
-            ),
+            build_plan=lambda projection: self.plan_draft(body=b"checked plan A"),
+            batch_source=lambda request: (_ for _ in ()).throw(AssertionError("unused")),
             publisher=published.append,
         )
-        checked = coordinator.prepare_plan(task_ref=ISSUE_URL)
-        result, _ = coordinator.publish_plan(checked)
+        context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+        result, _ = coordinator.publish_plan(context)
         self.assertEqual("proceed", result["verdict"])
         self.assertEqual(1, len(published))
         self.assertIsNone(published[0].candidate_head_sha)
+        self.assertEqual(b"checked plan A", published[0].artifacts[0].content)
+        self.assertIs(context.checked_plan.publication_artifact, published[0].artifacts[0])
+        plan_request = next(
+            item for item in provider.requests if isinstance(item, PlanCheckRequest)
+        )
+        self.assertIs(plan_request.publication_artifact, published[0].artifacts[0])
 
     def test_actor_observation_does_not_require_candidate(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -501,6 +727,62 @@ class PortableCoreTests(unittest.TestCase):
             ])
             self.assertEqual(2, code)
             self.assertEqual("fixture_not_authoritative", output["findings"][0]["kind"])
+
+    def test_actor_contract_rejects_fixture_fields_and_same_account_profile(self) -> None:
+        profile = self.actor_profile_object()
+        live = {
+            "decision_scope": "ao_actor_observation",
+            "operation_class": "commit",
+            "candidate_head_sha": None,
+            "actor_role": "machine_actor",
+            "observed_at": "2026-07-20T00:00:00Z",
+            "observed_actor": {"login": "machine", "id": 101},
+            "expected_actor": {"login": "machine", "id": 101},
+            "observation_source": "live_github_api",
+            "live_actor_verified": True,
+            "findings": [],
+            "verdict": "proceed",
+            "authority": "none",
+        }
+        observation = ActorObservation.from_mapping(live, profile=profile)
+        observation.validate_for(
+            profile,
+            operation_class="commit",
+            candidate_head_sha=None,
+        )
+
+        invalid_values = (
+            {**live, "decision_scope": "ao_detector_test"},
+            {**live, "actor_role": "human_actor"},
+            {**live, "observation_source": "fixture"},
+            {**live, "live_actor_verified": False},
+            {**live, "authority": "mutation"},
+            {**live, "findings": [{"kind": "wrong_actor"}]},
+        )
+        for invalid in invalid_values:
+            with self.assertRaises(ValueError):
+                ActorObservation.from_mapping(invalid, profile=profile)
+
+        same_account = self.actor_profile()
+        same_account["human_actor"] = {"login": "machine", "id": 101}
+        with self.assertRaises(ValueError):
+            ActorProfile.from_mapping(same_account)
+
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            profile_path = self.write_json(directory, "profile.json", same_account)
+            observed = self.write_json(directory, "user.json", {"login": "machine", "id": 101})
+            code, output, _ = self.run_json([
+                sys.executable,
+                str(CORE / "verify_actor.py"),
+                "--profile",
+                str(profile_path),
+                "--user-json",
+                str(observed),
+                "--allow-fixture",
+            ])
+            self.assertEqual(2, code)
+            self.assertEqual("invalid_actor_profile", output["findings"][0]["kind"])
 
     def receipt_input(self, result: dict, *, required: bool, candidate: str | None = None) -> dict:
         value = {
@@ -646,7 +928,7 @@ import json
 import os
 import sys
 if sys.argv[1:] == ["api", "user"]:
-    print(json.dumps({"login": "machine", "id": 101}))
+    print(json.dumps({"login": "machine", "id": 101, "name": "Machine Account"}))
     raise SystemExit(0)
 if sys.argv[1:] == ["auth", "token"]:
     print(os.environ["FAKE_GTP_TOKEN"])
@@ -782,6 +1064,8 @@ raise SystemExit(9)
                 str(source),
                 "--profile",
                 str(profile),
+                "--expected-profile-digest",
+                self.profile_digest(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -799,6 +1083,8 @@ raise SystemExit(9)
                 str(source),
                 "--profile",
                 str(profile),
+                "--expected-profile-digest",
+                self.profile_digest(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -815,6 +1101,8 @@ raise SystemExit(9)
                 str(source),
                 "--profile",
                 str(profile),
+                "--expected-profile-digest",
+                self.profile_digest(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -831,6 +1119,8 @@ raise SystemExit(9)
                 str(source),
                 "--profile",
                 str(profile),
+                "--expected-profile-digest",
+                self.profile_digest(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -861,6 +1151,8 @@ raise SystemExit(9)
                 str(source),
                 "--profile",
                 str(profile),
+                "--expected-profile-digest",
+                self.profile_digest(profile),
                 "--pr-json",
                 str(pr),
             ])
@@ -888,7 +1180,7 @@ if sys.argv[1:] == ["api", "repos/example/project/pulls/8"]:
         "base": {"repo": {"full_name": "example/project"}},
         "head": {"sha": os.environ["CANDIDATE"]},
         "merged_at": "2026-07-20T00:00:00Z",
-        "merged_by": {"login": "human", "id": 202}
+        "merged_by": {"login": "human", "id": 202, "type": "User"}
     }))
     raise SystemExit(0)
 raise SystemExit(9)
@@ -906,6 +1198,8 @@ raise SystemExit(9)
                 str(source),
                 "--profile",
                 str(profile),
+                "--expected-profile-digest",
+                self.profile_digest(profile),
                 "--gh-command",
                 str(fake_gh),
             ], environment=environment)
@@ -944,6 +1238,8 @@ raise SystemExit(9)
                 str(source),
                 "--profile",
                 str(profile),
+                "--expected-profile-digest",
+                self.profile_digest(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -976,6 +1272,8 @@ raise SystemExit(9)
                 str(source),
                 "--profile",
                 str(profile),
+                "--expected-profile-digest",
+                self.profile_digest(profile),
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -983,6 +1281,39 @@ raise SystemExit(9)
             self.assertEqual(2, code)
             self.assertEqual("unavailable", output["acceptance_state"])
             self.assertIn("pr_repository_mismatch", {item["kind"] for item in output["findings"]})
+
+    def test_acceptance_requires_the_invocation_profile_digest(self) -> None:
+        candidate = "a" * 40
+        with tempfile.TemporaryDirectory() as raw:
+            directory = Path(raw)
+            source = self.acceptance_input(directory, candidate)
+            profile = self.write_json(directory, "profile.json", self.actor_profile())
+            pr = self.write_json(
+                directory,
+                "pr.json",
+                {
+                    "base": {"repo": {"full_name": "example/project"}},
+                    "head": {"sha": candidate},
+                    "merged_at": "2026-07-20T00:00:00Z",
+                    "merged_by": {"login": "human", "id": 202},
+                },
+            )
+            code, output, _ = self.run_json([
+                sys.executable,
+                str(ACCEPTANCE),
+                str(source),
+                "--profile",
+                str(profile),
+                "--expected-profile-digest",
+                "f" * 64,
+                "--pr-json",
+                str(pr),
+                "--allow-fixture",
+            ])
+            self.assertEqual(2, code)
+            self.assertEqual("unavailable", output["acceptance_state"])
+            self.assertIn("actor_profile_mismatch", {item["kind"] for item in output["findings"]})
+            self.assertNotIn("profile_digest", json.dumps(output))
 
     def test_generic_command_executor_is_absent(self) -> None:
         self.assertFalse((SKILL / "scripts" / "verify_wiring_evidence.py").exists())
@@ -1039,6 +1370,8 @@ raise SystemExit(9)
             "Actor Observation",
             "Candidate Binding",
             "Projection Batch",
+            "Invocation Context",
+            "GitHub Mutation Gate",
         ):
             self.assertIn(f"**{term}**", context)
         for implementation_term in ("scripts/", "bind_operation_result.py", "recover.py"):

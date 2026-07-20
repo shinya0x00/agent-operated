@@ -13,6 +13,8 @@ import subprocess
 import sys
 from typing import Any
 
+from actor_contract import ActorIdentity, ActorProfile
+
 
 OPERATION_CLASS = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
@@ -29,36 +31,6 @@ def load_object(path: Path) -> dict[str, Any] | None:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
-
-
-def valid_actor(value: object) -> bool:
-    return (
-        isinstance(value, dict)
-        and isinstance(value.get("login"), str)
-        and bool(value["login"])
-        and isinstance(value.get("id"), int)
-        and not isinstance(value["id"], bool)
-        and value["id"] > 0
-    )
-
-
-def valid_profile(value: object) -> bool:
-    if not isinstance(value, dict) or set(value) != {
-        "profile_version",
-        "machine_actor",
-        "human_actor",
-        "human_only_operations",
-        "merge_policy",
-    }:
-        return False
-    operations = value.get("human_only_operations")
-    return (
-        value.get("profile_version") == 1
-        and valid_actor(value.get("machine_actor"))
-        and valid_actor(value.get("human_actor"))
-        and operations == ["acceptance_decision"]
-        and value.get("merge_policy") == "human_only"
-    )
 
 
 def observe_live_user(gh_command: str) -> dict[str, Any] | None:
@@ -82,7 +54,11 @@ def observe_live_user(gh_command: str) -> dict[str, Any] | None:
         value = json.loads(result.stdout)
     except json.JSONDecodeError:
         return None
-    return value if valid_actor(value) else None
+    try:
+        ActorIdentity.from_observation(value)
+    except (TypeError, ValueError):
+        return None
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -126,11 +102,9 @@ def main(argv: list[str] | None = None) -> int:
             "authority": "none",
         })
         return 2
-    profile = load_object(args.profile) if args.profile else None
-    if not valid_profile(profile):
-        profile = None
-    expected = profile.get(args.role) if profile else None
-    if not valid_actor(expected):
+    try:
+        profile = ActorProfile.load(args.profile)
+    except (TypeError, ValueError):
         emit({
             "decision_scope": "ao_actor_observation",
             "operation_class": args.operation_class,
@@ -139,6 +113,10 @@ def main(argv: list[str] | None = None) -> int:
             "authority": "none",
         })
         return 2
+    expected_identity = (
+        profile.machine_actor if args.role == "machine_actor" else profile.human_actor
+    )
+    expected = expected_identity.to_mapping()
 
     if args.user_json and not args.allow_fixture:
         emit({
@@ -152,7 +130,9 @@ def main(argv: list[str] | None = None) -> int:
 
     fixture_mode = args.user_json is not None
     observed = load_object(args.user_json) if fixture_mode else observe_live_user(args.gh_command)
-    if not valid_actor(observed):
+    try:
+        observed_identity = ActorIdentity.from_observation(observed)
+    except (TypeError, ValueError):
         emit({
             "decision_scope": "ao_actor_observation",
             "operation_class": args.operation_class,
@@ -162,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         })
         return 2
 
-    matches = observed["login"] == expected["login"] and observed["id"] == expected["id"]
+    matches = observed_identity == expected_identity
     observed_at = args.observed_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     envelope: dict[str, Any] = {
         "decision_scope": "ao_detector_test" if fixture_mode else "ao_actor_observation",
@@ -170,8 +150,8 @@ def main(argv: list[str] | None = None) -> int:
         "candidate_head_sha": args.candidate_head,
         "actor_role": args.role,
         "observed_at": observed_at,
-        "observed_actor": {"login": observed["login"], "id": observed["id"]},
-        "expected_actor": {"login": expected["login"], "id": expected["id"]},
+        "observed_actor": observed_identity.to_mapping(),
+        "expected_actor": expected,
         "observation_source": "fixture" if fixture_mode else "live_github_api",
         "live_actor_verified": not fixture_mode and matches,
         "findings": [],

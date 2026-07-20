@@ -35,7 +35,8 @@ GitHubが返す安定したnumeric actor IDを使用する。
 ### AO-CREDENTIAL-001: Credential isolation
 
 agent用credential routeは、人間が通常使用するGitHub credential routeから分離される。書き込み前にlive actorを
-読み戻し、宣言済みactorと一致しなければmutationを停止する。
+読み戻し、宣言済みactorと一致しなければmutationを停止する。Machine AccountとHuman Accountは異なるnumeric IDを
+持ち、fixtureまたは型のない真偽値をwrite authorizationとして扱わない。
 
 ### AO-HANDOFF-001: Direct human acceptance
 
@@ -55,8 +56,9 @@ wrong actor、unknown actor、stale Candidate Binding、欠落したOperation re
 Public Delivery Routeは、Human Accountへ提示する独立したOperation resultだけをOperation Receiptへ束縛する。
 Private Control Routeはhost固定のInternal Policy Gateをphase transition前に呼ぶが、そのdecision、provider identity、
 version、内部規則、診断情報をdurable artifactへ投影しない。
-`blocked`なら依存するmutation、publication、handoff callbackを呼ばない。plan checkはGTP recovery後に作る
-target-native planへ適用し、plan公開または最初のmutationの早い方をgateする。
+`blocked`なら依存するmutation、publication、handoffを発火させない。GTP recovery後に作ったtarget-native planと
+公開予定bytesを同じInvocation Contextへ固定し、すべての保護transitionへ要求する。GitHub writeは回数にかかわらず、
+各callbackの直前にGitHub Mutation Gateを通す。
 
 ## Supporting purposes
 
@@ -99,6 +101,8 @@ AOは次を目的にしない。
 - private providerの規則、identity、version、診断、provenanceの公開または複製
 - Internal Policy Gate decisionのOperation Receipt化
 - blocked decision後に依存するcallbackを実行すること
+- 最初のwriteに対するActor Observationを後続writeへ流用すること
+- fixture、boolean、またはfield不足のMappingをGitHub mutationの前提として受理すること
 - 検査後に再構築したpublication payloadを公開すること
 - Merge Steward findings、report UI、または判断語彙の再実装
 - 外部Operation resultを一つのAO pass/failまたは総合安全スコアへ変換すること
@@ -115,11 +119,14 @@ AOは次を目的にしない。
 
 portable coreは、repository名へ依存しないraw skill pathからActor Observation、GTP Operation、Publication
 Screening、Internal Policy Gate、Transition Coordinator、Operation Receipt binding、Acceptance Readbackが実発火したとき
-完成する。GTP recoveryはplan作成より先に発火し、blocked private decisionでは依存callbackが発火せず、同一Projection
-Batchがcheck、screening、publishへ渡る。
+完成する。GTP recoveryはplan作成より先に発火し、current Invocation Contextがcandidate、publication、handoffへ
+要求され、blocked private decisionでは依存callbackが発火しない。plan公開は検査済みbytesを直接使用し、一般publicationは
+同じChecked Planに束縛されたProjection Batchをcheck、screening、publishへ渡す。各GitHub writeの直前にはlive Machine
+Accountを再観測する。
 公開Operation固有resultは変更せずtaskとoptional Candidate Headへ束縛でき、private decisionはReceiptまたは
 durable Evidenceへ出力されない。Publication Screeningはtrusted candidate-content acquisitionがない間
-`not_applicable`であり、Acceptance Readbackはversioned Actor ProfileのHuman Accountだけを使用する。このbaselineはGTP
+`not_applicable`であり、Acceptance ReadbackはInvocation Contextと同じcontent digestを持つversioned Actor Profileの
+Human Accountだけを使用する。このbaselineはGTP
 task completion、Human Account acceptance、production provider、production batch completeness、Repository Integration、
 Merge Steward接続をClaimしない。
 

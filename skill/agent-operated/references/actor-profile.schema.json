@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://example.invalid/agent-operated/actor-profile.schema.json",
   "title": "Agent Operated Actor Profile",
+  "$comment": "Portable Core additionally requires machine_actor.id and human_actor.id to differ; the shared runtime parser enforces this cross-field invariant.",
   "type": "object",
   "additionalProperties": false,
   "required": [

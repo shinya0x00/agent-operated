@@ -15,24 +15,30 @@ GitHub native facts, or Human decisions.
 2. Invoke `scripts/operations/gtp/recover.py` through
    `scripts/core/transition_coordinator.py::TransitionCoordinator.prepare_plan`. Preserve the entire
    `gtp_projection`; do not rename or collapse its vocabulary.
-3. Read the recovered task state, contract, and `next_action`, then build one target-native scratch plan.
-4. Let `prepare_plan` call the host-supplied `InternalPolicyGate.check_plan`. The returned `CheckedPlan` is
-   invocation-local and grants no mutation authority.
-5. Use that `CheckedPlan` before the earlier of durable plan publication or first implementation mutation. A new
-   invocation, changed task projection, or material plan change requires a new `CheckedPlan`.
-6. Immediately before the first GitHub mutation, let `run_first_mutation` obtain Actor Observation from the
-   declared Actor Profile through `scripts/core/verify_actor.py`. Require live login and numeric ID to match before
-   calling the mutation.
-7. After the first executable candidate exists, call `continue_candidate` with its full Candidate Head and
-   target-native observations. A blocked decision must leave the continuation callback unfired.
+3. Read the recovered task state, contract, and `next_action`, then build one `PlanDraft` containing the
+   target-native scratch plan and the exact `PLAN_BODY` bytes intended for durable publication.
+4. Let `prepare_plan` call the host-supplied `InternalPolicyGate.check_plan` with both forms. Keep the returned
+   `InvocationContext`, which binds the task projection, checked plan, publication bytes, and configured Actor
+   Profile digest. It grants no mutation authority.
+5. Require that exact current `InvocationContext` for candidate check, publication, and handoff. A new invocation,
+   changed task projection, material plan change, or Actor Profile change requires a new context.
+6. Route every GitHub write, including commit, push, plan publication, Issue/PR mutation, comment, and projection
+   publisher, through `run_github_mutation`. Immediately before each callback, obtain a typed live Machine Account
+   Actor Observation scoped to that operation through `scripts/core/verify_actor.py` and the shared actor contract.
+   Never reuse an earlier observation. One callback represents one GitHub mutation; a host performing multiple
+   writes must invoke the wrapper separately for each write.
+7. After the first executable candidate exists, call `check_candidate` with the context, full Candidate Head, and
+   target-native observations. Use the returned `CheckedCandidate`; candidate checking does not execute a callback.
 8. Run validation and selected Public Operations without manufacturing a combined AO pass/fail.
-9. Fix the handoff Candidate Head, then call `handoff` to recheck that exact candidate. A blocked decision must
-   leave the Human handoff callback unfired.
-10. Have the host-owned batch source build one complete `ProjectionBatch` containing repository artifacts and the
+9. Fix the handoff Candidate Head, then call `prepare_handoff` with the same context and `CheckedCandidate` to
+   recheck it. The returned `HandoffReady` is not a write or merge authority.
+10. For plan publication, let `publish_plan` build the batch directly from the exact checked artifact. For other
+    publications, have the host-owned batch source build one complete `ProjectionBatch` containing repository artifacts and the
     exact outbound GitHub bodies for this publication attempt.
-11. Use `publish_projection` to pass the same batch object through `InternalPolicyGate.check_projection`,
-    source-neutral `scripts/operations/publication/check.py`, and the publisher. Do not accept a task-controlled
-    artifact list or rebuild content after checking.
+11. Require every batch to carry the current Checked Plan digest. Use opaque `artifact_id` values and only
+    repository-relative paths or the closed outbound-body vocabulary as `target_ref`. `publish_projection` passes
+    the same batch object through `InternalPolicyGate.check_projection`, source-neutral
+    `scripts/operations/publication/check.py`, and the actor-gated publisher.
 12. Bind selected public Operation results with `scripts/core/bind_operation_result.py`. Validate successful output
     against [operation-receipt.schema.json](references/operation-receipt.schema.json) and invalid-input output
     against [operation-receipt-error.schema.json](references/operation-receipt-error.schema.json).
@@ -40,8 +46,8 @@ GitHub native facts, or Human decisions.
     acquisition path observes the screened bytes. Do not manufacture `bound` by supplying the same SHA twice.
 14. Present the task, PR, Actor Observation, public Operation Receipts, Candidate Head, unknowns, and requested
     Human decision.
-15. After native merge, invoke `scripts/core/verify_acceptance_readback.py` with the same configured Actor Profile
-    source used for Actor Observation. The acceptance input must not supply `human_actor`.
+15. After native merge, invoke `scripts/core/verify_acceptance_readback.py` with the configured Actor Profile and
+    `--expected-profile-digest` from the same Invocation Context. The acceptance input must not supply `human_actor`.
 16. Require the task Issue, PR URL, and native PR base repository to match; then compare PR `head.sha`, `merged_at`,
     `merged_by.login`, and `merged_by.id` with the handed-off candidate and profile Human Account.
 17. Run GTP recovery again after native merge. AO does not derive or replace GTP completion state.
@@ -50,7 +56,8 @@ GitHub native facts, or Human decisions.
 
 - Remove ambient `GH_TOKEN` and `GITHUB_TOKEN` before GitHub CLI observation. For private GTP reads, apply
   [credential-bridge-policy.md](references/credential-bridge-policy.md).
-- Treat fixture results as `ao_detector_test`; never publish them as live Evidence.
+- Treat fixture results as `ao_detector_test`; they cannot become typed Actor Observation or authorize a write.
+- Require Machine Account and Human Account to have different numeric IDs in the shared Actor Profile parser.
 - Keep `authority: none` on AO receipts and detector outputs. It grants no mutation, merge, or completion authority.
 - Stop only the dependent transition when actor, task, candidate, source, or native PR observation is unavailable.
 - Treat Internal Policy Gate output as private, ephemeral control state. Do not add it to Operation Receipts,

@@ -12,6 +12,8 @@ import subprocess
 import sys
 from typing import Any
 
+from actor_contract import ActorIdentity, ActorProfile, FULL_DIGEST
+
 
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 ISSUE_URL = re.compile(
@@ -33,33 +35,6 @@ def load_object(path: Path | None) -> dict[str, Any] | None:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
-
-
-def actor(value: object) -> tuple[str, int] | None:
-    if (
-        not isinstance(value, dict)
-        or not isinstance(value.get("login"), str)
-        or not value["login"]
-        or not isinstance(value.get("id"), int)
-        or isinstance(value["id"], bool)
-        or value["id"] <= 0
-    ):
-        return None
-    return value["login"], value["id"]
-
-
-def human_actor_from_profile(path: Path | None) -> tuple[str, int] | None:
-    profile = load_object(path)
-    if profile is None:
-        return None
-    if (
-        profile.get("profile_version") != 1
-        or profile.get("merge_policy") != "human_only"
-        or profile.get("human_only_operations") != ["acceptance_decision"]
-        or actor(profile.get("machine_actor")) is None
-    ):
-        return None
-    return actor(profile.get("human_actor"))
 
 
 def repository_from(match: re.Match[str] | None) -> tuple[str, str] | None:
@@ -101,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", nargs="?", type=Path)
     parser.add_argument("--profile", type=Path)
+    parser.add_argument("--expected-profile-digest")
     parser.add_argument("--pr-json", type=Path)
     parser.add_argument("--allow-fixture", action="store_true")
     parser.add_argument("--gh-command", default="gh")
@@ -134,7 +110,11 @@ def main(argv: list[str] | None = None) -> int:
     pr_match = PR_URL.fullmatch(pr_ref) if isinstance(pr_ref, str) else None
     task_repository = repository_from(task_match)
     pr_repository = repository_from(pr_match)
-    expected_actor = human_actor_from_profile(args.profile)
+    try:
+        profile = ActorProfile.load(args.profile)
+    except (TypeError, ValueError):
+        profile = None
+    expected_actor = profile.human_actor if profile is not None else None
 
     if task_match is None:
         findings.append({"kind": "invalid_task_ref"})
@@ -149,6 +129,13 @@ def main(argv: list[str] | None = None) -> int:
         findings.append({"kind": "cross_repository_binding"})
     if expected_actor is None:
         findings.append({"kind": "invalid_actor_profile"})
+    if (
+        not isinstance(args.expected_profile_digest, str)
+        or FULL_DIGEST.fullmatch(args.expected_profile_digest) is None
+        or profile is None
+        or args.expected_profile_digest != profile.digest
+    ):
+        findings.append({"kind": "actor_profile_mismatch"})
 
     fixture_mode = args.pr_json is not None
     if fixture_mode and not args.allow_fixture:
@@ -163,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
     if not isinstance(pr, dict):
         findings.append({"kind": "pr_acquisition_failed"})
 
-    merged_by: tuple[str, int] | None = None
+    merged_by: ActorIdentity | None = None
     if isinstance(pr, dict):
         base_full_name = pr.get("base", {}).get("repo", {}).get("full_name")
         observed_base = (
@@ -178,7 +165,10 @@ def main(argv: list[str] | None = None) -> int:
 
         pr_head = pr.get("head", {}).get("sha")
         merged_at = pr.get("merged_at")
-        merged_by = actor(pr.get("merged_by"))
+        try:
+            merged_by = ActorIdentity.from_observation(pr.get("merged_by"))
+        except (TypeError, ValueError):
+            merged_by = None
         if candidate is not None and pr_head != candidate:
             findings.append({"kind": "stale_candidate"})
         native_merge_observed = isinstance(merged_at, str) and bool(merged_at)
@@ -197,6 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         "unexpected_acceptance_field",
         "cross_repository_binding",
         "invalid_actor_profile",
+        "actor_profile_mismatch",
         "fixture_not_authoritative",
         "pr_acquisition_failed",
         "pr_repository_unavailable",
@@ -224,7 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         "observation_source": "fixture" if fixture_mode else "live_github_api",
         "acceptance_state": acceptance_state,
         "observed_human_actor": (
-            {"login": merged_by[0], "id": merged_by[1]} if merged_by is not None else None
+            merged_by.to_mapping() if merged_by is not None else None
         ),
         "findings": findings,
         "authority": "none",

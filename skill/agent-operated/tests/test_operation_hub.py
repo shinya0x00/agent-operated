@@ -16,6 +16,7 @@ ISSUE_URL = "https://github.com/example/project/issues/7"
 
 sys.path.insert(0, str(CORE))
 sys.path.insert(0, str(PUBLICATION_DIR))
+from actor_contract import ActorObservation, ActorProfile  # noqa: E402
 from internal_policy_gate import (  # noqa: E402
     CandidateCheckRequest,
     GateDecision,
@@ -26,7 +27,12 @@ from internal_policy_gate import (  # noqa: E402
     ProjectionBatch,
     ProjectionCheckRequest,
 )
-from transition_coordinator import CheckedPlan, TransitionCoordinator  # noqa: E402
+from transition_coordinator import (  # noqa: E402
+    HandoffReady,
+    InvocationContext,
+    PlanDraft,
+    TransitionCoordinator,
+)
 from check import screen_batch  # noqa: E402
 
 
@@ -99,18 +105,15 @@ print(json.dumps({
         with tempfile.TemporaryDirectory() as raw:
             directory = Path(raw)
             provider = ProceedingPolicyProvider(events)
-            profile = self.write_json(
-                directory,
-                "profile.json",
-                {
-                    "profile_version": 1,
-                    "machine_actor": {"login": "machine", "id": 101},
-                    "human_actor": {"login": "human", "id": 202},
-                    "human_only_operations": ["acceptance_decision"],
-                    "merge_policy": "human_only",
-                },
-            )
-            observed_user = self.write_json(directory, "user.json", {"login": "machine", "id": 101})
+            profile_value = {
+                "profile_version": 1,
+                "machine_actor": {"login": "machine", "id": 101},
+                "human_actor": {"login": "human", "id": 202},
+                "human_only_operations": ["acceptance_decision"],
+                "merge_policy": "human_only",
+            }
+            profile_path = self.write_json(directory, "profile.json", profile_value)
+            actor_profile = ActorProfile.from_mapping(profile_value)
             fake_gtp = self.make_fake_gtp(directory)
 
             def recover_task(task_ref: str) -> dict:
@@ -127,69 +130,85 @@ print(json.dumps({
                 self.assertEqual(0, code)
                 return result
 
-            def build_plan(projection: dict) -> dict:
+            def build_plan(projection: dict) -> PlanDraft:
                 events.append("build_plan")
                 self.assertEqual("unmanaged", projection["gtp_projection"]["state"])
-                return {"scope": "portable boundary repair", "allowed_paths": ["skill/"]}
+                return PlanDraft.build(
+                    plan={"scope": "portable boundary repair", "allowed_paths": ["skill/"]},
+                    publication_artifact=ProjectionArtifact(
+                        "plan_body",
+                        "PLAN_BODY",
+                        b"portable boundary repair plan\n",
+                    ),
+                )
 
-            actor_result: dict = {}
+            def observe_actor(operation: str, head: str | None) -> ActorObservation:
+                events.append(f"actor:{operation}")
+                return ActorObservation(
+                    operation_class=operation,
+                    candidate_head_sha=head,
+                    observed_at="2000-01-01T00:00:00Z",
+                    actor=actor_profile.machine_actor,
+                    profile_digest=actor_profile.digest,
+                )
 
-            def observe_actor() -> dict:
-                events.append("actor_observation")
-                code, result = self.run_json([
-                    sys.executable,
-                    str(CORE / "verify_actor.py"),
-                    "--profile",
-                    str(profile),
-                    "--user-json",
-                    str(observed_user),
-                    "--allow-fixture",
-                ])
-                self.assertEqual(0, code)
-                actor_result.update(result)
-                return result
-
-            artifact = ProjectionArtifact("publication.md", b"public candidate\n")
+            artifact = ProjectionArtifact(
+                "candidate_publication",
+                "publication.md",
+                b"public candidate\n",
+            )
             published_batches: list[ProjectionBatch] = []
+
+            def publish(batch: ProjectionBatch) -> None:
+                events.append(f"publish:{batch.artifacts[0].target_ref}")
+                published_batches.append(batch)
+
             coordinator = TransitionCoordinator(
                 InternalPolicyGate(provider),
+                actor_profile=actor_profile,
                 recover_task=recover_task,
                 build_plan=build_plan,
                 observe_actor=observe_actor,
-                batch_source=lambda head: ProjectionBatch.build(
-                    candidate_head_sha=head,
+                batch_source=lambda request: ProjectionBatch.build(
+                    checked_plan_digest=request.checked_plan_digest,
+                    candidate_head_sha=request.candidate_head_sha,
                     artifacts=(artifact,),
                 ),
                 screening=screen_batch,
-                publisher=lambda batch: published_batches.append(batch),
+                publisher=publish,
             )
-            checked = coordinator.prepare_plan(task_ref=ISSUE_URL)
-            self.assertIsInstance(checked, CheckedPlan)
+            context = coordinator.prepare_plan(task_ref=ISSUE_URL)
+            self.assertIsInstance(context, InvocationContext)
 
-            coordinator.run_first_mutation(
-                checked,
-                mutation=lambda: events.append("mutation"),
+            coordinator.run_github_mutation(
+                context,
+                operation_class="commit",
+                mutation=lambda: events.append("mutation:commit"),
             )
-            coordinator.continue_candidate(
-                task_ref=ISSUE_URL,
-                candidate_head_sha=candidate,
-                observations={"actor": actor_result},
-                callback=lambda: events.append("candidate_continuation"),
+            coordinator.run_github_mutation(
+                context,
+                operation_class="push",
+                mutation=lambda: events.append("mutation:push"),
             )
-
-            screening_result, _ = coordinator.publish_projection(
-                task_ref=ISSUE_URL,
-                candidate_head_sha=candidate,
-            )
-            self.assertEqual("proceed", screening_result["verdict"])
-            self.assertEqual(1, len(published_batches))
-
-            coordinator.handoff(
-                task_ref=ISSUE_URL,
+            checked_candidate = coordinator.check_candidate(
+                context,
                 candidate_head_sha=candidate,
                 observations={"tests": "passed"},
-                callback=lambda: events.append("handoff"),
             )
+            coordinator.publish_plan(context)
+            screening_result, _ = coordinator.publish_projection(
+                context,
+                candidate=checked_candidate,
+            )
+            self.assertEqual("proceed", screening_result["verdict"])
+            self.assertEqual(2, len(published_batches))
+
+            handoff = coordinator.prepare_handoff(
+                context,
+                candidate=checked_candidate,
+                observations={"tests": "passed"},
+            )
+            self.assertIsInstance(handoff, HandoffReady)
 
             code, publication_receipt = self.bind(
                 directory,
@@ -231,7 +250,9 @@ print(json.dumps({
                 str(CORE / "verify_acceptance_readback.py"),
                 str(acceptance_input),
                 "--profile",
-                str(profile),
+                str(profile_path),
+                "--expected-profile-digest",
+                context.actor_profile_digest,
                 "--pr-json",
                 str(pr),
                 "--allow-fixture",
@@ -244,13 +265,18 @@ print(json.dumps({
                 "gtp_recovery",
                 "build_plan",
                 "check_plan",
-                "actor_observation",
-                "mutation",
+                "actor:commit",
+                "mutation:commit",
+                "actor:push",
+                "mutation:push",
                 "check_candidate",
-                "candidate_continuation",
                 "check_projection",
+                "actor:plan_publication",
+                "publish:PLAN_BODY",
+                "check_projection",
+                "actor:projection_publication",
+                "publish:publication.md",
                 "check_candidate",
-                "handoff",
             ],
             events,
         )
