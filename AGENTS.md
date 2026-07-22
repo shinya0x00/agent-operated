@@ -17,8 +17,9 @@
   - 同じIssue内の有効なGTP Contractと、そのContractを参照する有効なGTP Start
   - Startに束縛された唯一のnon-default branchと、現在checkoutしているbranchの一致
   - Contract `scope`に列挙されたrepository-relative pathだけを変更すること
-  - deliveryが同じIssue・branchの単一Draft PRだけであること
-- `Pre-activation Bootstrap Lane`が許可するのは、scope内file edit、commit、push、単一Draft PR作成までである。PRのready化、merge、default branch direct push、別Issue・別branch・別repository・追加PR、scope拡張を許可しない。条件の欠落または取得不能ではmutationを発火させない。
+  - delivery targetが同じIssue・branchの単一Draft PRだけに限定されていること。PR作成前は対象branchのPRが0件、作成後は同じIssue・branchのDraft PRが1件だけであること
+- PRが0件の`pre-PR state`では、scope内file edit、commit、branch push、単一Draft PR作成だけを許可し、push後はそのDraft PR作成以外のmutationを許可しない。
+- PR作成後は、そのPRがDraftかつ同じIssue・branchの唯一のPRである間だけ`Pre-activation Bootstrap Lane`を継続する。PRのready化、merge、default branch direct push、別Issue・別branch・別repository・追加PR、scope拡張を許可しない。条件の欠落または取得不能ではmutationを発火させない。
 - `Production Active`をhostが観測して`Activation Latch`を設定した後は`Pre-activation Bootstrap Lane`を利用または再有効化せず、current `InvocationContext`を要求する通常laneだけを使用する。設定済みlatchまたはproviderの取得不能は通常laneを停止し、pre-activationへ戻さない。
 - このlaneを導入する最初のrepair PRだけは、現在のgate自身が認可できないためIssue #22のHuman/admin経路で作成する。この一回限りの事実を後続taskのauthorizationとして再利用しない。
 - `halt`、`done`、`stopped`、Acquisition Error、Issue・branch・contextの不一致ではrepository mutationを開始しない。
