@@ -2,7 +2,7 @@
 
 Status: pre-alpha design and implementation baseline
 
-Decision records: [ADR-0001](adr/0001-redefine-agent-operated.md), [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md), [ADR-0010](adr/0010-bind-every-write-to-live-actor-and-invocation.md), [ADR-0012](adr/0012-define-pre-activation-bootstrap-lane.md)
+Decision records: [ADR-0001](adr/0001-redefine-agent-operated.md), [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md), [ADR-0010](adr/0010-bind-every-write-to-live-actor-and-invocation.md), [ADR-0011](adr/0011-define-default-on-host-enforcement.md), [ADR-0012](adr/0012-define-pre-activation-bootstrap-lane.md)
 
 Language: Japanese is canonical
 
@@ -64,12 +64,23 @@ version、内部規則、診断情報をdurable artifactへ投影しない。
 ### AO-BOOTSTRAP-001: Bounded pre-activation repair
 
 AOは`Host Enforcement Installed`と`Production Active`を分離する。production providerをまだ実host transitionへ固定注入できない
-期間は、Human/adminが明示したcanonical Issue、GTP Contract、GTP Start、専用branch、限定scope、単一Draft PRがすべて一致する
-場合だけ、自己bootstrapに必要なrepository repairを許可する。このlaneはtest providerまたはprovider unavailable時のfallbackではない。
+期間は、Human/adminが明示したcanonical Issue、GTP Contract、GTP Start、専用branch、限定scope、単一Draft PRというdelivery targetが
+一致する場合だけ、自己bootstrapに必要なrepository repairを許可する。PR作成前は対象branchのPR 0件を、作成後は同じIssue／branchの
+唯一のDraft PRを要求する。このlaneはtest providerまたはprovider unavailable時のfallbackではない。
 
 host-level Repository Integrationが`Production Active`を観測し、target repository外の単調な`Activation Latch`を設定した後は
 pre-activation laneを利用または再有効化せず、production providerで作ったcurrent `InvocationContext`を通常のrepository
 mutationへ要求する。設定済みlatchまたはproviderの取得不能をpre-activationへの復帰として扱わない。
+
+### AO-HOST-001: Default-on Host Enforcement
+
+AOはmacOS上のCodex CLIを最初のproduction targetとし、一度のuser-level installでGit repositoryへdefault-onのhost boundaryを適用する。
+通常起動とIssue未束縛sessionはread-onlyであり、明示的なIssue bindingとvalid Workspace Leaseがある専用linked worktreeだけをwritable rootにする。
+GitHub write capabilityとMachine Account credentialはtyped GitHub Mutation Brokerだけが保持する。
+
+Plugin／Hookは状態表示と早期denyを提供するが、write capabilityの正本ではない。未読込、disabled、broker停止、credential取得不能でも、
+sandbox、lease、credential separationがfilesystem／GitHub mutationを0件に維持する。repository marker、prompt内URL、自動Issue作成、
+自動mergeをpermissionまたはdefault-onの例外に使用しない。
 
 ## Supporting purposes
 
@@ -89,6 +100,7 @@ mutationへ要求する。設定済みlatchまたはproviderの取得不能をpr
 | Actor Profile、credential role、operation phase、route selection、Operation Receipt、Candidate Binding | AO |
 | Internal Policy Gateのprovider、内部規則、非公開診断 | host-private control boundary |
 | Host Enforcement activation observationとActivation Latch | host-level Repository Integration |
+| Host Guard、Issue Binding、Workspace Lease、broker sessionとcredential circuit | host-level Repository Integration |
 | Observed actor、任意のreview、check、head、merge fact | GitHub |
 | merge、保留、修正依頼等の最終判断 | Human Account |
 
@@ -120,13 +132,17 @@ AOは次を目的にしない。
 - 外部Operation resultを一つのAO pass/failまたは総合安全スコアへ変換すること
 - inputから任意commandまたはInternal Policy Gate providerを選択できる汎用executor
 - GTPと並行する独自task ledger
-- Plugin、executor、特定言語のscriptを必須の配布形態にすること
+- Portable Coreの配布形態をPlugin、executor、特定言語のscriptへ限定すること
 - すべての対象repositoryでAO専用ファイルをzeroにすること
 - Human AccountとMachine Accountの区別だけで、変更内容の正しさを証明すること
 - portable coreだけでrepository integrationまたはoperational baselineを完成扱いすること
 - test provider、fixture、environment variable、task本文、prompt、repository marker、agent requestからactivationまたはbootstrap例外を選ぶこと
 - `Production Active`後にpre-activation bootstrap laneへfallbackまたは再移行すること
 - pre-activation bootstrap laneからPR ready化、merge、default branch direct push、scope外mutationを行うこと
+- Plugin／Hookを唯一のHost Enforcement boundaryにすること
+- repository markerによるHost Enforcementのopt-in／opt-out、prompt内URLの自動binding
+- Codex Desktopへ未確認のhost APIでlease-bound workspace-writeを与えること
+- typed operationを迂回するraw command、raw REST path、raw GraphQLをbrokerへ渡すこと
 
 ## Success condition
 
@@ -148,19 +164,19 @@ Merge Steward接続をClaimしない。
 
 ### Operational baseline
 
-AOは、少なくとも一つの実repositoryで次のwalking skeletonが実証されたとき、最初のoperational baselineに到達する。
+AOは、macOS上の実Codex CLI sessionと実repositoryで次のdeny-only walking skeletonが実証されたとき、最初のdefault-on
+operational baselineに到達する。
 
-1. repositoryの`AGENTS.md`からAOを発見する。
-2. versioned Actor Profileを読む。
-3. Machine Account用の隔離GitHub CLI profileを使用する。
-4. ambient `GH_TOKEN`と`GITHUB_TOKEN`を除外する。
-5. write直前にlive actorのloginとnumeric IDを確認する。
-6. `agent-operated-bot`でcanary mutationを行う。
-7. GitHub native factからactor、ref、pushed headをread backする。
+1. user-level installがPlugin／Hook、Host Guard、broker、lease launcher、private gate、publication、handoff/readback attachmentを登録する。
+2. 通常の`codex`起動をunbound read-only、credentialなし、workspace networkなしにする。
+3. `ao codex --issue ISSUE_URL`だけが明示bindingを開始する。
+4. feature depth zeroでは各attachmentが実発火してstable findingでdenyする。
+5. Plugin／Hookを無効化してもfilesystem／GitHub native mutationが0件である。
+6. PR headに束縛されたhost contract Check Runが成功する。
 
-このwalking skeletonがないcredential routeは`configured`とは呼べても`proven`とは呼ばない。GTP、Publication
-Screening、Internal Policy Gate、Merge Stewardの追加接続とHuman acceptance flowは、このactor-separation
-baselineを保持した独立contractで接続し、それぞれのcompletion claimを分離する。
+deny-only baselineはMachine Account mutationを発火しない。typed broker、launchd／Keychain credential circuit、canary mutation、Workspace Lease、
+production Internal Policy Gate、Projection Batch、Merge Stewardは、この0-mutation invariantを保持した独立contractで順番に接続し、
+それぞれのcompletion claimを分離する。Portable Coreのtestだけではhost attachmentまたはOperational BaselineをprovenとClaimしない。
 
 ## Privacy and record boundary
 
