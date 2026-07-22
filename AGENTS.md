@@ -22,7 +22,8 @@
 - `Production Active`をhostが観測して`Activation Latch`を設定した後は`Pre-activation Bootstrap Lane`を利用または再有効化せず、current `InvocationContext`を要求する通常laneだけを使用する。設定済みlatchまたはproviderの取得不能は通常laneを停止し、pre-activationへ戻さない。
 - このlaneを導入する最初のrepair PRだけは、現在のgate自身が認可できないためIssue #22のHuman/admin経路で作成する。この一回限りの事実を後続taskのauthorizationとして再利用しない。
 - `halt`、`done`、`stopped`、Acquisition Error、Issue・branch・contextの不一致ではrepository mutationを開始しない。
-- `in_progress`以後は[`skill/agent-operated/SKILL.md`](skill/agent-operated/SKILL.md)をagent-facing entryとする。通常lane、およびmerge済み`Pre-activation Bootstrap Lane`でAgentが行うすべてのGitHub writeはMachine Accountのlive Actor Observationへ束縛する。Issue #22の最初のHuman/admin repairだけを上記の一回限りの例外とする。
+- `Production Active`で`in_progress`へ進んだtaskは[`skill/agent-operated/SKILL.md`](skill/agent-operated/SKILL.md)をagent-facing entryとし、production `check_plan`とcurrent `InvocationContext`を要求する通常laneを使用する。
+- `Production Active`前に`in_progress`へ進んだtaskは、通常skillの`prepare_plan`／Internal Policy Gate経路へ入らず、このroot admissionに列挙した`Pre-activation Bootstrap Lane`のclosed条件をagent-facing entryとして使用する。Agentが行うすべてのGitHub writeはMachine Accountのlive Actor Observationへ束縛する。Issue #22の最初のHuman/admin repairだけを上記の一回限りの例外とする。
 - 1 Issue = 1 branch = 1 PRを維持する。別scope、別branch、別PRへ移る場合は、GTPのStopと新Issueを使用する。
 
 GTP自体の初回setupまたはversion更新は、公開releaseをexact commitへ固定する専用setup branchとDraft PRで行う。default branchへ直接pushせず、人間がsetup PRをmergeするまで導入完了と扱わない。
