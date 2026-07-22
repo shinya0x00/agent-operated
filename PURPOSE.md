@@ -2,7 +2,7 @@
 
 Status: pre-alpha design and implementation baseline
 
-Decision records: [ADR-0001](adr/0001-redefine-agent-operated.md), [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md), [ADR-0010](adr/0010-bind-every-write-to-live-actor-and-invocation.md)
+Decision records: [ADR-0001](adr/0001-redefine-agent-operated.md), [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md), [ADR-0010](adr/0010-bind-every-write-to-live-actor-and-invocation.md), [ADR-0012](adr/0012-define-pre-activation-bootstrap-lane.md)
 
 Language: Japanese is canonical
 
@@ -61,6 +61,16 @@ version、内部規則、診断情報をdurable artifactへ投影しない。
 各callbackの直前にGitHub Mutation Gateを通す。新しいplan準備またはcandidate検査を始めた時点で対応する旧stateを
 失効させ、replacementが失敗しても以前のstateへ戻さない。
 
+### AO-BOOTSTRAP-001: Bounded pre-activation repair
+
+AOは`Host Enforcement Installed`と`Production Active`を分離する。production providerをまだ実host transitionへ固定注入できない
+期間は、Human/adminが明示したcanonical Issue、GTP Contract、GTP Start、専用branch、限定scope、単一Draft PRがすべて一致する
+場合だけ、自己bootstrapに必要なrepository repairを許可する。このlaneはtest providerまたはprovider unavailable時のfallbackではない。
+
+host-level Repository Integrationが`Production Active`を観測し、target repository外の単調な`Activation Latch`を設定した後は
+pre-activation laneを利用または再有効化せず、production providerで作ったcurrent `InvocationContext`を通常のrepository
+mutationへ要求する。設定済みlatchまたはproviderの取得不能をpre-activationへの復帰として扱わない。
+
 ## Supporting purposes
 
 - agentが最初に読む入口をAOへ一本化し、operation phaseに応じたrouteとAdapterを選択できるようにする。
@@ -78,6 +88,7 @@ version、内部規則、診断情報をdurable artifactへ投影しない。
 | PR受理reportの意味、findings、questions、UI | Merge Steward |
 | Actor Profile、credential role、operation phase、route selection、Operation Receipt、Candidate Binding | AO |
 | Internal Policy Gateのprovider、内部規則、非公開診断 | host-private control boundary |
+| Host Enforcement activation observationとActivation Latch | host-level Repository Integration |
 | Observed actor、任意のreview、check、head、merge fact | GitHub |
 | merge、保留、修正依頼等の最終判断 | Human Account |
 
@@ -113,6 +124,9 @@ AOは次を目的にしない。
 - すべての対象repositoryでAO専用ファイルをzeroにすること
 - Human AccountとMachine Accountの区別だけで、変更内容の正しさを証明すること
 - portable coreだけでrepository integrationまたはoperational baselineを完成扱いすること
+- test provider、fixture、environment variable、task本文、prompt、repository marker、agent requestからactivationまたはbootstrap例外を選ぶこと
+- `Production Active`後にpre-activation bootstrap laneへfallbackまたは再移行すること
+- pre-activation bootstrap laneからPR ready化、merge、default branch direct push、scope外mutationを行うこと
 
 ## Success condition
 
