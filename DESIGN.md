@@ -4,7 +4,7 @@ Status: pre-alpha design and implementation baseline
 
 Supersession: [ADR-0001](adr/0001-redefine-agent-operated.md)
 
-Later decisions: [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md), [ADR-0010](adr/0010-bind-every-write-to-live-actor-and-invocation.md)
+Later decisions: [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md), [ADR-0010](adr/0010-bind-every-write-to-live-actor-and-invocation.md), [ADR-0012](adr/0012-define-pre-activation-bootstrap-lane.md)
 
 Language: Japanese is canonical
 
@@ -359,3 +359,57 @@ ephemeral runtime ID、Internal Policy Gate decision、provider identity、versi
 
 AO detectorとOperation Receiptは`authority: none`を保持する。actor match、candidate binding、publication screening、
 acceptance readbackの成功は、それぞれのscope外のmutation、merge、task completionをauthorizeしない。
+
+## 14. Host Enforcement activationと自己bootstrap
+
+### 14.1 Activation state
+
+Host Enforcementの導入状態は次の二つを区別する。
+
+| State | Meaning | Authority |
+|---|---|---|
+| `Host Enforcement Installed` | root admission、Portable Core、または配布物が存在するが、production Internal Policy Gate providerを実host transitionへ固定注入できるとはまだ観測されていない | repository artifactは存在を示せるが、activationを宣言できない |
+| `Production Active` | host-level Repository Integrationがproduction providerをin-processで固定注入し、real transitionでcurrent `InvocationContext`を作り、host-ownedな単調`Activation Latch`を設定した | host-level Repository Integrationのtyped observationとActivation Latchだけ |
+
+task本文、prompt、environment variable、filesystem marker、repository config、agent request、fixture、test providerは
+activation sourceまたはlatch resetにならない。初回activation observationを取得できない場合、AOは`Production Active`と
+推測しない。設定済み`Activation Latch`を取得できない場合は通常laneを停止し、未設定と推測しない。
+
+`Production Active`はproviderの存在だけでは成立しない。少なくともhostが固定したproviderで`check_plan`を実transitionに
+発火させ、source-neutralな結果からcurrent `InvocationContext`を作れることをhost integrationが観測する。観測成功時に
+target repository外のhost-owned `Activation Latch`を単調に設定する。provider実装、private rule、identity、version、
+diagnostic、error sink、latch storageはIssue #16が所有し、repository artifactへ投影しない。
+
+### 14.2 Pre-activation Bootstrap Lane
+
+`Host Enforcement Installed`かつ`Production Active`ではない期間に、通常laneが自身のproviderを実装する前から
+current `InvocationContext`を要求すると自己bootstrap不能になる。この期間だけ、Human/adminが明示した
+`Pre-activation Bootstrap Lane`を使用できる。
+
+laneは次のすべてを同じtaskへ束縛する。
+
+1. canonical GitHub Issue URL
+2. 同じIssueの有効なGTP Contract
+3. Contractを参照する有効なGTP Start
+4. Startに束縛された唯一のnon-default branch
+5. Contract `scope`に列挙されたrepository-relative path
+6. 同じIssueとbranchの単一Draft PR
+7. Human/adminによる明示的な開始と、各GitHub actorのnative observation
+
+laneが許可するoperationは、scope内file edit、commit、push、Draft PR作成までである。PR ready化、merge、default branch
+direct push、別Issue、別branch、別repository、追加PR、Contract scopeの拡張は許可しない。一つでも入力を取得できない、
+または不一致ならdependent mutationを発火させない。
+
+このlaneはInternal Policy Gateの代替provider、例外token、Operation、Operation Receiptではない。private decisionを生成せず、
+test providerをauthorityへ昇格せず、GTP Recordの意味も変更しない。最初のIssue #22 repair PRはlane自体がまだroot adapterに
+存在しないためHuman/admin経路で作成する。この一回限りのrepairは後続taskのauthorizationにならない。
+
+### 14.3 Activation後の境界
+
+hostが`Production Active`を観測し`Activation Latch`を設定した時点から、`Pre-activation Bootstrap Lane`は利用不能である。activation後のすべての
+repository mutationはGTP recovery、production `check_plan`、current `InvocationContext`を要求する。taskやAgentはactivationを
+falseへ戻せず、bootstrap laneを再有効化できない。provider unavailableは通常laneの`internal_check_unavailable`であり、
+pre-activationへ自動fallbackしない。設定済みlatchのread failureも通常laneを停止し、未設定として扱わない。
+
+Draft PRの存在、Human approval、Machine Account actor match、GTP `in_progress`のいずれも、それだけではmerge、task completion、
+または`Production Active`を意味しない。Human Accountはrepair candidateを直接確認し、native mergeを別のdecisionとして行う。

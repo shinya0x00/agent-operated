@@ -84,6 +84,22 @@ _Avoid_: standalone product、repository integration
 Portable Coreと特定repositoryの運用面を結ぶrepository固有の構成。
 _Avoid_: portable core
 
+**Host Enforcement Installed**:
+Host Enforcementのroot admissionまたは配布物が存在するが、production Internal Policy Gate providerの実host接続はまだ成立したとみなさない導入状態。
+_Avoid_: Production Active、provider configured
+
+**Production Active**:
+host-level Repository Integrationがproduction Internal Policy Gate providerをreal transitionへ固定注入し、current Invocation Contextを作れる導入状態。
+_Avoid_: installed、test provider active、task-selected activation
+
+**Activation Latch**:
+Production Activeへ到達済みであることをhostが保持し、pre-activation状態への復帰を拒否する単調な記録。
+_Avoid_: repository marker、task flag、resettable activation
+
+**Pre-activation Bootstrap Lane**:
+Host Enforcement InstalledからProduction Activeへ到達する前だけ、Human/adminが明示した一つのIssue、Contract、Start、branch、限定scope、Draft PRを束縛する一時的なrepair経路。
+_Avoid_: Internal Policy Gate fallback、恒久例外、provider substitute
+
 **Handoff Readiness**:
 Human Accountへtask、PR、必要なCandidate Head、Actor Observation、Operation Receipt、unknownとdecision requestを提示できる状態。
 _Avoid_: approval、acceptance
