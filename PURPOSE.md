@@ -2,7 +2,7 @@
 
 Status: pre-alpha design and implementation baseline
 
-Decision records: [ADR-0001](adr/0001-redefine-agent-operated.md), [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md), [ADR-0010](adr/0010-bind-every-write-to-live-actor-and-invocation.md), [ADR-0012](adr/0012-define-pre-activation-bootstrap-lane.md)
+Decision records: [ADR-0001](adr/0001-redefine-agent-operated.md), [ADR-0002](adr/0002-record-gtp-artifact-generation-provenance.md), [ADR-0003](adr/0003-require-host-sourced-model-identity.md), [ADR-0004](adr/0004-separate-handoff-readiness-and-human-acceptance.md), [ADR-0005](adr/0005-require-live-firing-evidence-acquisition.md), [ADR-0006](adr/0006-define-portable-core-boundary.md), [ADR-0007](adr/0007-define-operation-hub-boundary.md), [ADR-0008](adr/0008-separate-public-delivery-and-private-control.md), [ADR-0009](adr/0009-bind-private-control-to-transitions.md), [ADR-0010](adr/0010-bind-every-write-to-live-actor-and-invocation.md), [ADR-0011](adr/0011-define-desktop-host-enforcement.md), [ADR-0012](adr/0012-define-pre-activation-bootstrap-lane.md)
 
 Language: Japanese is canonical
 
@@ -71,6 +71,20 @@ host-level Repository Integrationが`Production Active`を観測し、target rep
 pre-activation laneを利用または再有効化せず、production providerで作ったcurrent `InvocationContext`を通常のrepository
 mutationへ要求する。設定済みlatchまたはproviderの取得不能をpre-activationへの復帰として扱わない。
 
+### AO-DESKTOP-001: Desktop production Host Enforcement
+
+実際のproduction surfaceはCodex Desktopである。Codex CLIとcustom app-server clientはHost Guard、broker、Issue Binder、Workspace Lease、
+sandbox contractを制御可能にbring-up／validationするsurfaceであり、Desktop Evidenceの代用品ではない。
+
+repositoryまたはGitHubのmutationにはcanonical Issue Bindingを必須とする。Issueなしではread-onlyの調査、説明、repository readを許可するが、
+file edit、commit、branch／PR／Issue mutationを許可しない。Desktop thread開始前にIssue Bindingとwritable rootを固定できるhost APIを
+観測できない場合、`desktop_host_attachment_unavailable`をunknownとして残し、CLI完成を#6の実運用完成へ昇格しない。
+
+HookはDesktopの状態表示とtool observationに加え、対応toolを`permissionDecision: "deny"`、legacy `decision: "block"`、または
+exit code 2で実行前に拒否できる。`continue: false`は`PreToolUse`で非対応であり、一部tool pathはHookを通らない可能性がある。
+したがってHookを早期denyに利用しても唯一のenforcement boundaryにはせず、Desktop sandbox、Workspace Lease、broker-only credential
+boundaryの実接続とfailure matrixを最終acceptanceにする。
+
 ## Supporting purposes
 
 - agentが最初に読む入口をAOへ一本化し、operation phaseに応じたrouteとAdapterを選択できるようにする。
@@ -89,6 +103,7 @@ mutationへ要求する。設定済みlatchまたはproviderの取得不能をpr
 | Actor Profile、credential role、operation phase、route selection、Operation Receipt、Candidate Binding | AO |
 | Internal Policy Gateのprovider、内部規則、非公開診断 | host-private control boundary |
 | Host Enforcement activation observationとActivation Latch | host-level Repository Integration |
+| Desktop Host Guard attachment、Issue Binding、Workspace Lease、broker sessionとcredential circuit | host-level Repository Integration |
 | Observed actor、任意のreview、check、head、merge fact | GitHub |
 | merge、保留、修正依頼等の最終判断 | Human Account |
 
@@ -120,13 +135,17 @@ AOは次を目的にしない。
 - 外部Operation resultを一つのAO pass/failまたは総合安全スコアへ変換すること
 - inputから任意commandまたはInternal Policy Gate providerを選択できる汎用executor
 - GTPと並行する独自task ledger
-- Plugin、executor、特定言語のscriptを必須の配布形態にすること
+- Portable Coreの配布形態をPlugin、executor、特定言語のscriptへ限定すること
 - すべての対象repositoryでAO専用ファイルをzeroにすること
 - Human AccountとMachine Accountの区別だけで、変更内容の正しさを証明すること
 - portable coreだけでrepository integrationまたはoperational baselineを完成扱いすること
 - test provider、fixture、environment variable、task本文、prompt、repository marker、agent requestからactivationまたはbootstrap例外を選ぶこと
 - `Production Active`後にpre-activation bootstrap laneへfallbackまたは再移行すること
 - pre-activation bootstrap laneからPR ready化、merge、default branch direct push、scope外mutationを行うこと
+- Codex CLIまたはcustom app-server clientのEvidenceをDesktop production Evidenceへ代用すること
+- current `PreToolUse` HookをDesktopの唯一のdeny boundaryとして扱うこと
+- Desktop Host Guard／Workspace Lease attachment APIが未確認のまま#6を実運用完成とすること
+- canonical IssueなしのrepositoryまたはGitHub mutationを許可すること
 
 ## Success condition
 
@@ -148,19 +167,19 @@ Merge Steward接続をClaimしない。
 
 ### Operational baseline
 
-AOは、少なくとも一つの実repositoryで次のwalking skeletonが実証されたとき、最初のoperational baselineに到達する。
+AOは、実Codex Desktop sessionと実repositoryで次が実証されたとき、最初のproduction Operational Baselineに到達する。
 
-1. repositoryの`AGENTS.md`からAOを発見する。
-2. versioned Actor Profileを読む。
-3. Machine Account用の隔離GitHub CLI profileを使用する。
-4. ambient `GH_TOKEN`と`GITHUB_TOKEN`を除外する。
-5. write直前にlive actorのloginとnumeric IDを確認する。
-6. `agent-operated-bot`でcanary mutationを行う。
-7. GitHub native factからactor、ref、pushed headをread backする。
+1. Desktop thread開始前にHost Guardが発火し、canonical Issueなしではread-onlyになる。
+2. explicit Issue Bindingとvalid GTP stateだけが専用worktreeのWorkspace Lease候補を作る。
+3. Desktop sandboxのwritable rootがlease worktree一つへ固定される。
+4. Hook disabledまたはHook対象外tool pathでもsandboxとcredential boundaryが維持される。
+5. Desktop、raw shell、generic connectorにMachine Account write credentialがなく、GitHub mutationはtyped brokerだけが行う。
+6. Issueなし、GTP `halt`、broker停止、credential取得不能、expired leaseでfilesystem／GitHub mutationが0件になる。
+7. Desktop native observation、broker Actor Observation、GitHub native readbackが同じcaseへ束縛される。
 
-このwalking skeletonがないcredential routeは`configured`とは呼べても`proven`とは呼ばない。GTP、Publication
-Screening、Internal Policy Gate、Merge Stewardの追加接続とHuman acceptance flowは、このactor-separation
-baselineを保持した独立contractで接続し、それぞれのcompletion claimを分離する。
+Desktop attachment APIを確認できない場合、このbaselineは未達である。CLI／custom clientで同じcomponent contractとnegative caseが
+成功しても、Desktop production completionをClaimしない。GTP、Publication Screening、Internal Policy Gate、Merge Stewardと
+Human acceptance flowは、このDesktop boundaryを保持した独立contractで接続し、それぞれのcompletion claimを分離する。
 
 ## Privacy and record boundary
 
