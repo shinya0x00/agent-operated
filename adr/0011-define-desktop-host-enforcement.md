@@ -22,7 +22,8 @@ Codex Desktopのcurrent公開documentationから、次を観測した。
 - Desktopのlocal commandはmacOSのOS-enforced sandbox内で動作し、`read-only`、`workspace-write`、writable roots等の概念を持つ。
 - Desktop、CLI、IDE extensionはCodex configuration layerを共有する。
 - user-level、managed、plugin-bundled lifecycle Hookを利用でき、`SessionStart`と`PreToolUse`を観測できる。
-- current `PreToolUse` command Hookは`continue: false`によるtool-call停止をsupportしない。unsupported outputはHook failureとなりtool callが続く。
+- current `PreToolUse` command Hookは、対応toolを`permissionDecision: "deny"`、legacy `decision: "block"`、またはexit code 2で実行前に拒否できる。
+- `continue: false`は`PreToolUse`で非対応であり、このunsupported outputはHook failureとなってtool callが続く。
 - 一部specialized tool pathはdefault Hook pathを外れ得るため、Hookは完全なenforcement boundaryではない。
 - app-serverとSDKはthread／turn単位でcwdとsandbox presetを指定できる。
 - DesktopはCodex-managed worktreeとpermission controlを持つ。
@@ -94,11 +95,11 @@ integrationを所有する。
 
 ### Hook boundary
 
-Hook Adapterは`SessionStart`でrepository、Issue Binding、GTP state、next Human actionを表示し、`PreToolUse`でtool名とargumentを観測して
-source-neutralなfindingを提示できる。current APIで`PreToolUse`がtool callをfail-closedに停止できるとは設計しない。
+Hook Adapterは`SessionStart`でrepository、Issue Binding、GTP state、next Human actionを表示する。`PreToolUse`ではtool名とargumentを
+観測してsource-neutralなfindingを提示し、対応toolをsupported deny shapeまたはexit code 2で実行前に拒否できる。
 
 Hook未読込、disabled、trust未承認、Hook failure、specialized tool bypassでもwrite capabilityが増えないことを、Desktop sandbox、
-Workspace Lease、broker-only credential boundaryで証明する。HookはUX guardとobservation pointであり、enforcementの正本ではない。
+Workspace Lease、broker-only credential boundaryで証明する。Hookは早期denyを持つUX guardとobservation pointだが、enforcementの正本ではない。
 
 ### Sandbox and Workspace Lease boundary
 
@@ -157,9 +158,9 @@ Desktop Host Attachment APIが未確認である間、次を維持する。
 
 Desktopの通常threadを使わない別surfaceへ利用者を移し、現在のproduction workflowを検証しないため採用しない。
 
-### `PreToolUse` Hookをdeny authorityにする
+### `PreToolUse` Hookを唯一のdeny authorityにする
 
-current output contractはtool-call停止をsupportせず、一部tool pathはHookを外れ得るため採用しない。
+対応toolの事前拒否はsupportするが、Hookは無効化可能で、一部tool pathもHookを外れ得るため採用しない。
 
 ### app-server custom clientをDesktopとみなす
 

@@ -101,7 +101,8 @@ hostが観測したrepository、binding、leaseからsession capabilityを決め
 _Avoid_: Hook guard、repository marker
 
 **Hook Adapter**:
-`SessionStart`／`PreToolUse`等でHost Guardがsanitiseした状態を表示・観測するUX境界。current `PreToolUse`だけではtool-call停止authorityを持たない。
+`SessionStart`／`PreToolUse`等でHost Guardがsanitiseした状態を表示・観測し、対応toolを実行前にdenyするUX境界。`continue: false`は
+`PreToolUse`で非対応であり、一部tool pathもHookを通らないため、write capabilityの正本にはしない。
 _Avoid_: Host Guard、write authority
 
 **Repository Identity**:

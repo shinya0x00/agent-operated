@@ -80,8 +80,9 @@ repositoryまたはGitHubのmutationにはcanonical Issue Bindingを必須とす
 file edit、commit、branch／PR／Issue mutationを許可しない。Desktop thread開始前にIssue Bindingとwritable rootを固定できるhost APIを
 観測できない場合、`desktop_host_attachment_unavailable`をunknownとして残し、CLI完成を#6の実運用完成へ昇格しない。
 
-HookはDesktopの状態表示とtool observationに利用できるが、current `PreToolUse`はtool-call停止をsupportせず、一部tool pathはHookを
-通らない可能性がある。したがってHookを唯一のenforcement boundaryにせず、Desktop sandbox、Workspace Lease、broker-only credential
+HookはDesktopの状態表示とtool observationに加え、対応toolを`permissionDecision: "deny"`、legacy `decision: "block"`、または
+exit code 2で実行前に拒否できる。`continue: false`は`PreToolUse`で非対応であり、一部tool pathはHookを通らない可能性がある。
+したがってHookを早期denyに利用しても唯一のenforcement boundaryにはせず、Desktop sandbox、Workspace Lease、broker-only credential
 boundaryの実接続とfailure matrixを最終acceptanceにする。
 
 ## Supporting purposes
