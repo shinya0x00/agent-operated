@@ -84,6 +84,62 @@ _Avoid_: standalone product、repository integration
 Portable Coreと特定repositoryの運用面を結ぶrepository固有の構成。
 _Avoid_: portable core
 
+**Production Surface**:
+実運用completionとfailure matrixを、そのsurface自身のnative observationで証明しなければならないCodex実行面。現在のAOではCodex Desktop。
+_Avoid_: bring-up surface、documentation-only target
+
+**Bring-up Surface**:
+component、interface、negative caseを制御可能に接続して検証する実行面。Codex CLIまたはcustom app-server clientを含むが、Production Surface Evidenceを代替しない。
+_Avoid_: production fallback、acceptance substitute
+
+**Desktop Host Attachment**:
+Codex Desktop thread開始前または最初のmutation前に、Host Guard、Issue Binding、sandbox、Workspace Leaseを同じsessionへ固定するhost extension point。
+_Avoid_: CLI flag、Hook output、custom client assumption
+
+**Host Guard**:
+hostが観測したrepository、binding、leaseからsession capabilityを決め、write capabilityをfail-closedに制限する境界。
+_Avoid_: Hook guard、repository marker
+
+**Hook Adapter**:
+`SessionStart`／`PreToolUse`等でHost Guardがsanitiseした状態を表示・観測するUX境界。current `PreToolUse`だけではtool-call停止authorityを持たない。
+_Avoid_: Host Guard、write authority
+
+**Repository Identity**:
+GitHub owner/repository、git common identity、worktree identityを束縛し、repository root、linked worktree、subdirectoryを同じ対象として照合するhost contract。
+_Avoid_: local path、remote URL string
+
+**Issue Binding**:
+明示操作でcanonical Issue URL、Repository Identity、GTP Projection digest、expected branch、generationを束縛したhost state。
+_Avoid_: prompt URL discovery、GTP Record
+
+**Issue Binder**:
+canonical Issue URLとRepository Identityを検証し、公式GTP Projectionからgeneration付きIssue Bindingを作るhost component。
+_Avoid_: URL scanner、GTP state machine
+
+**Host Operational State**:
+GTP Projectionとhost-local binding／handoff observationからcurrent capabilityを選ぶclosed projection。
+_Avoid_: GTP state、AO verdict
+
+**Workspace Lease**:
+Repository Identity、Issue、branch、専用worktree、binding generation、expiryを束縛し、一つのwritable rootだけを許可するopaqueなhost capability。
+_Avoid_: arbitrary path allowlist、repository marker
+
+**Workspace Lease Manager**:
+`active`なIssue BindingだけにWorkspace Leaseを発行し、branch、generation、expiry、handoff等の変化で失効させるhost component。
+_Avoid_: generic worktree manager、agent-selected writable root
+
+**GitHub Mutation Broker**:
+Machine Account credentialを排他的に保持し、closedなtyped operationを一つのGitHub native mutationへ変換するhost service。
+_Avoid_: generic executor、raw API proxy
+
+**Human Exception**:
+host admin surfaceだけが発行でき、repository、scopeとしてのallowed operations、reason、expiry、max uses、Human Actor Observationを束縛する期限付き例外。
+_Avoid_: agent request、prompt exception、marker opt-out
+
+**Finding Code**:
+Host Enforcementがprivate diagnosticを漏らさず、拒否、取得不能、未確認attachmentの安定した理由を示すclosed token。
+_Avoid_: raw error、private rule identity
+
 **Host Enforcement Installed**:
 Host Enforcementのroot admissionまたは配布物が存在するが、production Internal Policy Gate providerの実host接続はまだ成立したとみなさない導入状態。
 _Avoid_: Production Active、provider configured
@@ -97,7 +153,7 @@ Production Activeへ到達済みであることをhostが保持し、pre-activat
 _Avoid_: repository marker、task flag、resettable activation
 
 **Pre-activation Bootstrap Lane**:
-Host Enforcement InstalledからProduction Activeへ到達する前だけ、Human/adminが明示した一つのIssue、Contract、Start、branch、限定scope、Draft PRを束縛する一時的なrepair経路。
+Host Enforcement InstalledからProduction Activeへ到達する前だけ、Human/adminが明示した一つのIssue、Contract、Start、branch、限定scope、単一Draft PRというdelivery targetを束縛する一時的なrepair経路。PR作成前は対象branchのPR 0件を許し、最初のpush後はDraft PR作成以外を停止する。
 _Avoid_: Internal Policy Gate fallback、恒久例外、provider substitute
 
 **Handoff Readiness**:
