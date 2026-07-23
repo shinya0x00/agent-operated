@@ -6,7 +6,6 @@
 - Scope: Issue #25
 - Supersedes: ADR-0001のagent-selected skillとCLI canaryを中心にしたOperational Baseline
 - Preserves: ADR-0006のPortable Core boundary、ADR-0008からADR-0010のpublic／private routeとtransition boundary
-- Refines: ADR-0012のPre-activation Bootstrap Lane delivery state
 - Predecessor task: Issue #7、unmerged PR #24
 
 ## Context
@@ -40,6 +39,17 @@ official evidence basisは次である。
 - [Codex app-server](https://learn.chatgpt.com/docs/app-server)
 
 documentationに記載がないことは実装不存在の証明ではない。未確認capabilityはabsenceではなくunknownとして扱う。
+
+### Investigation status
+
+| Category | Current state | Evidence boundary |
+|---|---|---|
+| documented fact | 上記4件の公開documentationを取得した | documentationが明記するsandbox、configuration、Hook、app-server capabilityまで |
+| Desktop-native observation | 未取得 | 実Desktop sessionまたはhost processを観測したEvidenceはない |
+| 未実施probe | Desktop version、registration point、trigger、oracleの取得 | いずれも未実施であり、値を推測しない |
+| unknown | first-party DesktopへHost Guard、Issue Binding、Workspace Leaseを固定注入できるextension pointの有無 | 現在のunknownは公開documentation調査だけに基づく |
+
+実Desktop surfaceでextension pointが存在しないとはClaimしない。
 
 ## Decision
 
@@ -114,19 +124,10 @@ Issueなしは`unbound`、GTP Acquisition Errorはstateなし、GTP `halt`は`ha
 
 Desktop Host Attachment APIが未確認である間、次を維持する。
 
-- Host Enforcement InstalledまたはCLI bring-up済みと、Desktop Production Activeを区別する。
+- CLI bring-up済みとDesktop production completionを区別する。
 - CLI、custom client、fixture、task本文、environment、repository markerからDesktop activationを選ばない。
 - parent #6、Desktop failure matrix、Workspace Lease acceptanceを未完了として扱う。
 - unknown解消に必要なofficial APIまたは実Desktop observationをsuccessor runtime Issueのentry conditionにする。
-
-### Pre-activation delivery
-
-ADR-0012のPre-activation Bootstrap LaneをPR作成前と作成後に分ける。
-
-- PR作成前は対象branchのPR 0件を要求し、scope内file edit、commit、branch push、単一Draft PR作成だけを許可する。
-- 最初のpush後はそのDraft PR作成以外のmutationを許可しない。
-- PR作成後は、同じIssue／branchの唯一のPRがDraftである間だけlaneを継続する。
-- Ready、merge、別Issue、別branch、別repository、追加PR、scope拡張ではmutationを停止する。
 
 ## Consequences
 

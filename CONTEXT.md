@@ -153,7 +153,7 @@ Production Activeへ到達済みであることをhostが保持し、pre-activat
 _Avoid_: repository marker、task flag、resettable activation
 
 **Pre-activation Bootstrap Lane**:
-Host Enforcement InstalledからProduction Activeへ到達する前だけ、Human/adminが明示した一つのIssue、Contract、Start、branch、限定scope、単一Draft PRというdelivery targetを束縛する一時的なrepair経路。PR作成前は対象branchのPR 0件を許し、最初のpush後はDraft PR作成以外を停止する。
+Host Enforcement InstalledからProduction Activeへ到達する前だけ、Human/adminが明示した一つのIssue、Contract、Start、branch、限定scope、Draft PRを束縛する一時的なrepair経路。
 _Avoid_: Internal Policy Gate fallback、恒久例外、provider substitute
 
 **Handoff Readiness**:

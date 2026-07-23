@@ -64,9 +64,8 @@ version、内部規則、診断情報をdurable artifactへ投影しない。
 ### AO-BOOTSTRAP-001: Bounded pre-activation repair
 
 AOは`Host Enforcement Installed`と`Production Active`を分離する。production providerをまだ実host transitionへ固定注入できない
-期間は、Human/adminが明示したcanonical Issue、GTP Contract、GTP Start、専用branch、限定scope、単一Draft PRというdelivery targetが
-一致する場合だけ、自己bootstrapに必要なrepository repairを許可する。PR作成前は対象branchのPR 0件を、作成後は同じIssue／branchの
-唯一のDraft PRを要求する。このlaneはtest providerまたはprovider unavailable時のfallbackではない。
+期間は、Human/adminが明示したcanonical Issue、GTP Contract、GTP Start、専用branch、限定scope、単一Draft PRがすべて一致する
+場合だけ、自己bootstrapに必要なrepository repairを許可する。このlaneはtest providerまたはprovider unavailable時のfallbackではない。
 
 host-level Repository Integrationが`Production Active`を観測し、target repository外の単調な`Activation Latch`を設定した後は
 pre-activation laneを利用または再有効化せず、production providerで作ったcurrent `InvocationContext`を通常のrepository

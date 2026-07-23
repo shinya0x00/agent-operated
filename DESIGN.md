@@ -405,13 +405,12 @@ laneは次のすべてを同じtaskへ束縛する。
 3. Contractを参照する有効なGTP Start
 4. Startに束縛された唯一のnon-default branch
 5. Contract `scope`に列挙されたrepository-relative path
-6. delivery targetを同じIssueとbranchの単一Draft PRだけへ限定する不変条件
+6. 同じIssueとbranchの単一Draft PR
 7. Human/adminによる明示的な開始と、各GitHub actorのnative observation
 
-PR作成前の`pre-PR state`では対象branchのPRが0件であることを要求し、scope内file edit、commit、branch push、単一Draft PR作成だけを
-許可する。最初のpush後はそのDraft PR作成以外のmutationを許可しない。PR作成後は、同じIssueとbranchの唯一のPRがDraftである間だけ
-laneを継続する。PR ready化、merge、default branch direct push、別Issue、別branch、別repository、追加PR、Contract scopeの拡張は
-許可しない。一つでも入力を取得できない、または不一致ならdependent mutationを発火させない。
+laneが許可するoperationは、scope内file edit、commit、push、Draft PR作成までである。PR ready化、merge、default branch
+direct push、別Issue、別branch、別repository、追加PR、Contract scopeの拡張は許可しない。一つでも入力を取得できない、
+または不一致ならdependent mutationを発火させない。
 
 このlaneはInternal Policy Gateの代替provider、例外token、Operation、Operation Receiptではない。private decisionを生成せず、
 test providerをauthorityへ昇格せず、GTP Recordの意味も変更しない。最初のIssue #22 repair PRはlane自体がまだroot adapterに
